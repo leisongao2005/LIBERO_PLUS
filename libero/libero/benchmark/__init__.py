@@ -59,6 +59,8 @@ libero_suites = [
     "libero_goal",
     "libero_90",
     "libero_10",
+    "libero_10_cl1",
+    "libero_10_cl2",
     "libero_10_diff_obj",
     "libero_10_random",
     "libero_10_train",  # Training tasks
@@ -218,6 +220,22 @@ class LIBERO_10(Benchmark):
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_10"
+        self._make_benchmark()
+
+
+@register_benchmark
+class LIBERO_10_CL1(Benchmark):
+    def __init__(self, task_order_index=0):
+        super().__init__(task_order_index=task_order_index)
+        self.name = "libero_10_cl1"
+        self._make_benchmark()
+
+
+@register_benchmark
+class LIBERO_10_CL2(Benchmark):
+    def __init__(self, task_order_index=0):
+        super().__init__(task_order_index=task_order_index)
+        self.name = "libero_10_cl2"
         self._make_benchmark()
 
 

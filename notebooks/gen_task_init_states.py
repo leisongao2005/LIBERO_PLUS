@@ -41,7 +41,7 @@ print(b.get_task_names())
 
 generate_pddl = False
 generate_init_states = True
-suite_name = "libero_10_eval" # libero_10_train or libero_10_eval
+suite_name = "libero_10_cl2" # libero_10_train or libero_10_eval
 overwrite = False
 
 num_init_states = 100
