@@ -3,6 +3,88 @@ from bddl.parsing import *
 import itertools
 import numpy as np
 
+
+def parse_subtask_rewards(group):
+    """Parse a (:subtask_rewards ...) token group into a structured list.
+
+    Each element of the returned list is a dict:
+      {
+        "name":          str,
+        "predicate_fn":  callable,    # pre-instantiated with any numeric params
+        "predicate_args": list[str],  # object-name tokens resolved at reward time
+        "reward":        float,       # fractional weight; all weights sum to 1.0
+        "after":         list[str],   # prerequisite subtask names (:after ordering)
+      }
+
+    Predicates with numeric thresholds (NearEEF, Near) are instantiated here so
+    their __call__ only receives ObjectState arguments at evaluation time.
+    """
+    from libero.libero.envs.predicates import (
+        VALIDATE_PREDICATE_FN_DICT,
+        PARAMETRIC_PREDICATE_CLS,
+        instantiate_predicate,
+    )
+
+    group.pop(0)  # discard ':subtask_rewards' keyword
+    subtasks = []
+
+    for item in group:
+        assert item[0] == ":subtask", f"Expected ':subtask', got '{item[0]}'"
+        name = item[1]
+        pred_fn = None
+        pred_args = []
+        reward = None
+        after = []
+
+        for attr in item[2:]:
+            key = attr[0]
+            if key == ":predicate":
+                pred_spec = attr[1]          # e.g. ['neareef', 'flat_stove_1', '0.15']
+                pred_name = pred_spec[0].lower()
+                obj_args, num_params = [], []
+                for tok in pred_spec[1:]:
+                    try:
+                        num_params.append(float(tok))
+                    except (ValueError, TypeError):
+                        obj_args.append(tok)
+                if pred_name in PARAMETRIC_PREDICATE_CLS:
+                    pred_fn = instantiate_predicate(pred_name, num_params)
+                elif pred_name in VALIDATE_PREDICATE_FN_DICT:
+                    pred_fn = VALIDATE_PREDICATE_FN_DICT[pred_name]
+                else:
+                    raise ValueError(
+                        f"Unknown predicate '{pred_name}' in :subtask_rewards. "
+                        f"Standard predicates: {list(VALIDATE_PREDICATE_FN_DICT.keys())}. "
+                        f"Parametric predicates: {list(PARAMETRIC_PREDICATE_CLS.keys())}."
+                    )
+                pred_args = obj_args
+            elif key == ":reward":
+                reward = float(attr[1])
+            elif key == ":after":
+                after = list(attr[1:])
+
+        assert pred_fn is not None, f"Subtask '{name}' has no :predicate attribute"
+        subtasks.append(
+            {
+                "name": name,
+                "predicate_fn": pred_fn,
+                "predicate_args": pred_args,
+                "reward": reward,
+                "after": after,
+            }
+        )
+
+    # Fill equal-split default rewards for any subtask with reward=None.
+    n_unspecified = sum(1 for s in subtasks if s["reward"] is None)
+    allocated = sum(s["reward"] for s in subtasks if s["reward"] is not None)
+    if n_unspecified > 0:
+        default_reward = max(0.0, (1.0 - allocated) / n_unspecified)
+        for s in subtasks:
+            if s["reward"] is None:
+                s["reward"] = default_reward
+
+    return subtasks
+
 pi = np.pi
 
 
@@ -94,6 +176,7 @@ def robosuite_parse_problem(problem_filename):
         obj_of_interest = []
         initial_state = []
         goal_state = []
+        subtask_rewards = []
         fixtures = {}
         regions = {}
         scene_properties = {}
@@ -153,6 +236,8 @@ def robosuite_parse_problem(problem_filename):
                 initial_state = group
             elif t == ":goal":
                 package_predicates(group[1], goal_state, "", "goals")
+            elif t == ":subtask_rewards":
+                subtask_rewards = parse_subtask_rewards(group)
             else:
                 print("%s is not recognized in problem" % t)
         return {
@@ -163,6 +248,7 @@ def robosuite_parse_problem(problem_filename):
             "scene_properties": scene_properties,
             "initial_state": initial_state,
             "goal_state": goal_state,
+            "subtask_rewards": subtask_rewards,
             "language_instruction": language_instruction,
             "obj_of_interest": obj_of_interest,
         }

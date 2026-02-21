@@ -2,6 +2,7 @@ from typing import List
 
 
 class Expression:
+
     def __init__(self):
         raise NotImplementedError
 
@@ -10,6 +11,7 @@ class Expression:
 
 
 class UnaryAtomic(Expression):
+
     def __init__(self):
         pass
 
@@ -18,6 +20,7 @@ class UnaryAtomic(Expression):
 
 
 class BinaryAtomic(Expression):
+
     def __init__(self):
         pass
 
@@ -26,6 +29,7 @@ class BinaryAtomic(Expression):
 
 
 class MultiarayAtomic(Expression):
+
     def __init__(self):
         pass
 
@@ -34,6 +38,7 @@ class MultiarayAtomic(Expression):
 
 
 class TruePredicateFn(MultiarayAtomic):
+
     def __init__(self):
         super().__init__()
 
@@ -42,6 +47,7 @@ class TruePredicateFn(MultiarayAtomic):
 
 
 class FalsePredicateFn(MultiarayAtomic):
+
     def __init__(self):
         super().__init__()
 
@@ -50,16 +56,19 @@ class FalsePredicateFn(MultiarayAtomic):
 
 
 class InContactPredicateFn(BinaryAtomic):
+
     def __call__(self, arg1, arg2):
         return arg1.check_contact(arg2)
 
 
 class In(BinaryAtomic):
+
     def __call__(self, arg1, arg2):
         return arg2.check_contact(arg1) and arg2.check_contain(arg1)
 
 
 class On(BinaryAtomic):
+
     def __call__(self, arg1, arg2):
         return arg2.check_ontop(arg1)
 
@@ -77,17 +86,16 @@ class On(BinaryAtomic):
 
 
 class Up(BinaryAtomic):
+
     def __call__(self, arg1):
         return arg1.get_geom_state()["pos"][2] >= 1.0
 
 
 class Stack(BinaryAtomic):
+
     def __call__(self, arg1, arg2):
-        return (
-            arg1.check_contact(arg2)
-            and arg2.check_contain(arg1)
-            and arg1.get_geom_state()["pos"][2] > arg2.get_geom_state()["pos"][2]
-        )
+        return (arg1.check_contact(arg2) and arg2.check_contain(arg1) and
+                arg1.get_geom_state()["pos"][2] > arg2.get_geom_state()["pos"][2])
 
 
 class PrintJointState(UnaryAtomic):
@@ -99,20 +107,62 @@ class PrintJointState(UnaryAtomic):
 
 
 class Open(UnaryAtomic):
+
     def __call__(self, arg):
         return arg.is_open()
 
 
 class Close(UnaryAtomic):
+
     def __call__(self, arg):
         return arg.is_close()
 
 
 class TurnOn(UnaryAtomic):
+
     def __call__(self, arg):
         return arg.turn_on()
 
 
 class TurnOff(UnaryAtomic):
+
     def __call__(self, arg):
         return arg.turn_off()
+
+
+import numpy as np
+
+
+class NearEEF(UnaryAtomic):
+    """True if the robot end-effector is within `threshold` metres of the object."""
+
+    def __init__(self, threshold: float = 0.15):
+        self.threshold = threshold
+
+    def __call__(self, arg):
+        obj_pos = np.array(arg.get_geom_state()["pos"])
+        eef_pos = np.array(arg.env.sim.data.site_xpos[arg.env.robots[0].eef_site_id])
+        return float(np.linalg.norm(obj_pos - eef_pos)) < self.threshold
+
+
+class Grasp(UnaryAtomic):
+    """True if the robot gripper is in contact with the object."""
+
+    # TODO: we are grasping if we are touching and also add some lifting check so we actually are holding it
+
+    def __call__(self, arg):
+        robot = arg.env.robots[0]
+        obj = arg.env.get_object(arg.object_name)
+        return arg.env.check_contact(robot.gripper, obj)
+
+
+class Near(BinaryAtomic):
+    """True if two objects are within `threshold` metres of each other."""
+
+    def __init__(self, threshold: float = 0.10):
+        self.threshold = threshold
+
+    def __call__(self, arg1, arg2):
+        pos1 = np.array(arg1.get_geom_state()["pos"])
+        pos2 = np.array(arg2.get_geom_state()["pos"])
+        return float(np.linalg.norm(pos1 - pos2)) < self.threshold

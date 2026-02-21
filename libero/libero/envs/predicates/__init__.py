@@ -15,6 +15,14 @@ VALIDATE_PREDICATE_FN_DICT = {
     "close": Close(),
     "turnon": TurnOn(),
     "turnoff": TurnOff(),
+    "grasp": Grasp(),
+}
+
+# Predicates that require numeric parameters and must be instantiated at parse time.
+# Keys are lowercased predicate names as they appear after BDDL tokenization.
+PARAMETRIC_PREDICATE_CLS = {
+    "neareef": NearEEF,
+    "near": Near,
 }
 
 
@@ -33,3 +41,13 @@ def get_predicate_fn_dict():
 
 def get_predicate_fn(predicate_fn_name):
     return VALIDATE_PREDICATE_FN_DICT[predicate_fn_name.lower()]
+
+
+def instantiate_predicate(predicate_name: str, numeric_params: list):
+    """Instantiate a parametric predicate (e.g. NearEEF, Near) with numeric args."""
+    name = predicate_name.lower()
+    assert name in PARAMETRIC_PREDICATE_CLS, (
+        f"Unknown parametric predicate '{name}'. "
+        f"Available: {list(PARAMETRIC_PREDICATE_CLS.keys())}"
+    )
+    return PARAMETRIC_PREDICATE_CLS[name](*numeric_params)
