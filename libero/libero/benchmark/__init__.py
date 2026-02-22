@@ -44,9 +44,9 @@ class Task(NamedTuple):
 def grab_language_from_filename(x):
     if x[0].isupper():  # LIBERO-100
         if "SCENE10" in x:
-            language = " ".join(x[x.find("SCENE") + 8 :].split("_"))
+            language = " ".join(x[x.find("SCENE") + 8:].split("_"))
         else:
-            language = " ".join(x[x.find("SCENE") + 7 :].split("_"))
+            language = " ".join(x[x.find("SCENE") + 7:].split("_"))
     else:
         language = " ".join(x.split("_"))
     en = language.find(".bddl")
@@ -64,11 +64,11 @@ libero_suites = [
     "libero_10_diff_obj",
     "libero_10_random",
     "libero_10_train",  # Training tasks
-    "libero_10_eval",   # Evaluation tasks
+    "libero_10_eval",  # Evaluation tasks
     "custom_eval_easy",
-    "custom_eval_hard"
+    "custom_eval_hard",
+    "libero_10_subtasks",
 ]
-
 
 task_maps = {}
 max_len = 0
@@ -88,7 +88,6 @@ for libero_suite in libero_suites:
 
         # print(language, "\n", f"{task}.bddl", "\n")
         # print("")
-
 
 task_orders = [
     [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
@@ -152,9 +151,8 @@ class Benchmark(abc.ABC):
         return bddl_file_path
 
     def get_task_demonstration(self, i):
-        assert (
-            0 <= i and i < self.n_tasks
-        ), f"[error] task number {i} is outer of range {self.n_tasks}"
+        assert (0 <= i and
+                i < self.n_tasks), f"[error] task number {i} is outer of range {self.n_tasks}"
         # this path is relative to the datasets folder
         demo_path = f"{self.tasks[i].problem_folder}/{self.tasks[i].name}_demo.hdf5"
         return demo_path
@@ -182,6 +180,7 @@ class Benchmark(abc.ABC):
 
 @register_benchmark
 class LIBERO_SPATIAL(Benchmark):
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_spatial"
@@ -190,6 +189,7 @@ class LIBERO_SPATIAL(Benchmark):
 
 @register_benchmark
 class LIBERO_OBJECT(Benchmark):
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_object"
@@ -198,6 +198,7 @@ class LIBERO_OBJECT(Benchmark):
 
 @register_benchmark
 class LIBERO_GOAL(Benchmark):
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_goal"
@@ -206,17 +207,18 @@ class LIBERO_GOAL(Benchmark):
 
 @register_benchmark
 class LIBERO_90(Benchmark):
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         assert (
-            task_order_index == 0
-        ), "[error] currently only support task order for 10-task suites"
+            task_order_index == 0), "[error] currently only support task order for 10-task suites"
         self.name = "libero_90"
         self._make_benchmark()
 
 
 @register_benchmark
 class LIBERO_10(Benchmark):
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_10"
@@ -225,6 +227,7 @@ class LIBERO_10(Benchmark):
 
 @register_benchmark
 class LIBERO_10_CL1(Benchmark):
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_10_cl1"
@@ -233,6 +236,7 @@ class LIBERO_10_CL1(Benchmark):
 
 @register_benchmark
 class LIBERO_10_CL2(Benchmark):
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_10_cl2"
@@ -241,18 +245,21 @@ class LIBERO_10_CL2(Benchmark):
 
 @register_benchmark
 class LIBERO_100(Benchmark):
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_100"
         self._make_benchmark()
 
+
 @register_benchmark
 class LIBERO_10_diff_obj(Benchmark):
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_10_diff_obj"
-        self._make_benchmark() 
-    
+        self._make_benchmark()
+
     def _make_benchmark(self):
         tasks = list(task_maps[self.name].values())
         self.tasks = tasks
@@ -270,11 +277,12 @@ class LIBERO_10_train(Benchmark):
     - background (3 in-distribution)
     - receptacle distribution (2 - 3 per task)
     """
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_10_train"
-        self._make_benchmark() 
-    
+        self._make_benchmark()
+
     def _make_benchmark(self):
         tasks = list(task_maps[self.name].values())
         self.tasks = tasks
@@ -292,11 +300,12 @@ class libero_10_eval(Benchmark):
     - distractor objects (1 - 3 depending on task complexity)
     - held out background (floor background)
     """
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_10_eval"
-        self._make_benchmark() 
-    
+        self._make_benchmark()
+
     def _make_benchmark(self):
         tasks = list(task_maps[self.name].values())
         self.tasks = tasks
@@ -304,6 +313,22 @@ class libero_10_eval(Benchmark):
         # print(f"[info] using task orders {task_orders[self.task_order_index]}")
         # self.tasks = [tasks[i] for i in task_orders[self.task_order_index]]
         self.n_tasks = len(self.tasks)
+
+
+@register_benchmark
+class LIBERO_10_SUBTASKS(Benchmark):
+    """LIBERO-10 tasks with fine-grained :subtask_rewards sections in their BDDL files."""
+
+    def __init__(self, task_order_index=0):
+        super().__init__(task_order_index=task_order_index)
+        self.name = "libero_10_subtasks"
+        self._make_benchmark()
+
+    def _make_benchmark(self):
+        tasks = list(task_maps[self.name].values())
+        self.tasks = tasks
+        self.n_tasks = len(self.tasks)
+
 
 @register_benchmark
 class Custom_Eval_Hard(Benchmark):
@@ -316,11 +341,12 @@ class Custom_Eval_Hard(Benchmark):
     - distractor objects (1 - 3 depending on task complexity)
     - all backgrounds including held out background (floor background)
     """
+
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "custom_eval_hard"
-        self._make_benchmark() 
-    
+        self._make_benchmark()
+
     def _make_benchmark(self):
         tasks = list(task_maps[self.name].values())
         self.tasks = tasks

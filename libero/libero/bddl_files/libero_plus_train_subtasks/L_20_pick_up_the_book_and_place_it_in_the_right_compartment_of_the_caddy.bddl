@@ -1,0 +1,99 @@
+(define (problem LIBERO_Living_Room_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language pick up the book and place it in the right compartment of the caddy)
+    (:regions
+      (red_coffee_mug_init_region
+          (:target living_room_table)
+          (:ranges (
+              (0.05 0.1 0.225 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (porcelain_mug_init_region
+          (:target living_room_table)
+          (:ranges (
+              (-0.025 -0.025 0.2 0.025)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+
+      (desk_caddy_init_region
+          (:target living_room_table)
+          (:ranges (
+              (-0.22 -0.17 -0.18 -0.11)
+            )
+          )
+          (:yaw_rotation (
+              (3 3.28)
+            )
+          )
+      )
+      (desk_caddy_front_left_contain_region
+          (:target living_room_table)
+          (:ranges (
+              (-0.025 -0.3 0.2 -0.125)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (right_contain_region
+          (:target desk_caddy_1)
+      )
+      (left_contain_region
+          (:target desk_caddy_1)
+      )
+      (back_contain_region
+          (:target desk_caddy_1)
+      )
+      (front_contain_region
+          (:target desk_caddy_1)
+      )
+    )
+
+  (:fixtures
+    living_room_table - living_room_table
+    desk_caddy_1 - desk_caddy
+  )
+
+  (:objects
+    black_book_1 - black_book
+    red_coffee_mug_1 - red_coffee_mug
+    porcelain_mug_1 - porcelain_mug
+  )
+
+  (:obj_of_interest
+    black_book_1
+    desk_caddy_1
+  )
+
+  (:init
+    (On desk_caddy_1 living_room_table_desk_caddy_init_region)
+    (On black_book_1 living_room_table_desk_caddy_front_left_contain_region)
+    (On porcelain_mug_1 living_room_table_porcelain_mug_init_region)
+    (On red_coffee_mug_1 living_room_table_red_coffee_mug_init_region)
+  )
+
+  (:goal
+    (And (In black_book_1 desk_caddy_1_right_contain_region))
+  )
+
+
+  (:subtask_rewards
+    (:subtask place_black_book_1
+      (:predicate (In black_book_1 desk_caddy_1_right_contain_region))
+      (:reward 1.0)
+    )
+  )
+
+)

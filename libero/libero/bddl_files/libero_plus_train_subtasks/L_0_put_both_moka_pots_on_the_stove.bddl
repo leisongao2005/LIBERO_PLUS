@@ -1,0 +1,85 @@
+(define (problem LIBERO_Living_Room_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language put both moka pots on the stove)
+    (:regions
+      (flat_stove_init_region
+          (:target living_room_table)
+          (:ranges (
+              (-0.2 -0.3 -0.18 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (moka_pot_right_init_region
+          (:target living_room_table)
+          (:ranges (
+              (0.12 0.05 0.15 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (moka_pot_left_init_region
+          (:target living_room_table)
+          (:ranges (
+              (0.12 -0.3 0.15 -0.05)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (cook_region
+          (:target flat_stove_1)
+      )
+    )
+
+  (:fixtures
+    living_room_table - living_room_table
+    flat_stove_1 - flat_stove
+  )
+
+  (:objects
+    moka_pot_1 moka_pot_2 - moka_pot
+  )
+
+  (:obj_of_interest
+    moka_pot_1
+    moka_pot_2
+    flat_stove_1
+  )
+
+  (:init
+    (On flat_stove_1 living_room_table_flat_stove_init_region)
+    (On moka_pot_1 living_room_table_moka_pot_right_init_region)
+    (On moka_pot_2 living_room_table_moka_pot_left_init_region)
+    (Turnon flat_stove_1)
+  )
+
+  (:goal
+    (And (On moka_pot_1 flat_stove_1_cook_region) (On moka_pot_2 flat_stove_1_cook_region) (Turnon flat_stove_1))
+  )
+
+
+  (:subtask_rewards
+    (:subtask place_moka_pot_1
+      (:predicate (On moka_pot_1 flat_stove_1_cook_region))
+      (:reward 1.0)
+    )
+    (:subtask place_moka_pot_2
+      (:predicate (On moka_pot_2 flat_stove_1_cook_region))
+      (:reward 1.0)
+    )
+    (:subtask turnon_stove
+      (:predicate (Turnon flat_stove_1))
+      (:reward 1.0)
+    )
+  )
+
+)

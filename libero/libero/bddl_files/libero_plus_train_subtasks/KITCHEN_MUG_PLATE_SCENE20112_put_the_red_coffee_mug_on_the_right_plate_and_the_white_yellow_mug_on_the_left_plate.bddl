@@ -1,0 +1,128 @@
+(define (problem LIBERO_Kitchen_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language put the red coffee mug on the right plate and the white yellow mug on the left plate)
+    (:regions
+      (plate_1_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.2 0.1 -0.1 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (0 6.283185307179586)
+            )
+          )
+      )
+      (plate_2_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.2 -0.3 -0.1 -0.1)
+            )
+          )
+          (:yaw_rotation (
+              (0 6.283185307179586)
+            )
+          )
+      )
+      (porcelain_mug_1_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (0.05 0.2 0.15 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (0 6.283185307179586)
+            )
+          )
+      )
+      (white_yellow_mug_1_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (0.05 -0.3 0.15 -0.2)
+            )
+          )
+          (:yaw_rotation (
+              (0 6.283185307179586)
+            )
+          )
+      )
+      (red_coffee_mug_1_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (0.05 -0.05 0.15 0.05)
+            )
+          )
+          (:yaw_rotation (
+              (0 6.283185307179586)
+            )
+          )
+      )
+      (cookies_1_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.05 -0.3 0.02 -0.05)
+            )
+          )
+          (:yaw_rotation (
+              (0 6.283185307179586)
+            )
+          )
+      )
+      (chocolate_pudding_1_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.05 0.05 0.02 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (0 6.283185307179586)
+            )
+          )
+      )
+    )
+
+  (:fixtures
+    kitchen_table - kitchen_table
+  )
+
+  (:objects
+    plate_1 plate_2 - plate
+    porcelain_mug_1 - porcelain_mug
+    white_yellow_mug_1 - white_yellow_mug
+    red_coffee_mug_1 - red_coffee_mug
+    cookies_1 - cookies
+    chocolate_pudding_1 - chocolate_pudding
+  )
+
+  (:obj_of_interest
+    red_coffee_mug_1
+    white_yellow_mug_1
+  )
+
+  (:init
+    (On plate_1 kitchen_table_plate_1_init_region)
+    (On plate_2 kitchen_table_plate_2_init_region)
+    (On porcelain_mug_1 kitchen_table_porcelain_mug_1_init_region)
+    (On white_yellow_mug_1 kitchen_table_white_yellow_mug_1_init_region)
+    (On red_coffee_mug_1 kitchen_table_red_coffee_mug_1_init_region)
+    (On cookies_1 kitchen_table_cookies_1_init_region)
+    (On chocolate_pudding_1 kitchen_table_chocolate_pudding_1_init_region)
+  )
+
+  (:goal
+    (And (On red_coffee_mug_1 plate_1) (On white_yellow_mug_1 plate_2))
+  )
+
+
+  (:subtask_rewards
+    (:subtask place_red_coffee_mug_1
+      (:predicate (On red_coffee_mug_1 plate_1))
+      (:reward 1.0)
+    )
+    (:subtask place_white_yellow_mug_1
+      (:predicate (On white_yellow_mug_1 plate_2))
+      (:reward 1.0)
+    )
+  )
+
+)

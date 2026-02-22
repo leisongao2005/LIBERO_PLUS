@@ -1,0 +1,98 @@
+(define (problem LIBERO_Floor_Manipulation)
+  (:domain robosuite)
+  (:language open the microwave and put the red mug in it)
+    (:regions
+      (microwave_init_region
+          (:target floor)
+          (:ranges (
+              (-0.1 0.22 0 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (0 0)
+            )
+          )
+      )
+      (white_yellow_mug_init_region
+          (:target floor)
+          (:ranges (
+              (-0.2 -0.3 -0.15 -0.1)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (porcelain_mug_init_region
+          (:target floor)
+          (:ranges (
+              (-0.04 -0.3 0.01 -0.1)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (red_coffee_mug_init_region
+          (:target floor)
+          (:ranges (
+              (0.12 -0.3 0.15 -0.1)
+            )
+          )
+          (:yaw_rotation (
+              (0 6.28)
+            )
+          )
+      )
+      (top_side
+          (:target microwave_1)
+      )
+      (heating_region
+          (:target microwave_1)
+      )
+    )
+
+  (:fixtures
+    floor - floor
+    microwave_1 - microwave
+  )
+
+  (:objects
+    porcelain_mug_1 - porcelain_mug
+    white_yellow_mug_1 - white_yellow_mug
+    red_coffee_mug_1 - red_coffee_mug
+  )
+
+  (:obj_of_interest
+    red_coffee_mug_1
+    microwave_1
+  )
+
+  (:init
+    (On porcelain_mug_1 floor_porcelain_mug_init_region)
+    (On white_yellow_mug_1 floor_white_yellow_mug_init_region)
+    (On red_coffee_mug_1 floor_red_coffee_mug_init_region)
+    (On microwave_1 floor_microwave_init_region)
+    (Close microwave_1)
+  )
+
+  (:goal
+    (And (Open microwave_1) (In red_coffee_mug_1 microwave_1_heating_region))
+  )
+
+
+  (:subtask_rewards
+    (:subtask open_microwave
+      (:predicate (Open microwave_1))
+      (:reward 1.0)
+    )
+    (:subtask place_red_coffee_mug_1
+      (:predicate (In red_coffee_mug_1 microwave_1_heating_region))
+      (:reward 1.0)
+      (:after open_microwave)
+    )
+  )
+
+)

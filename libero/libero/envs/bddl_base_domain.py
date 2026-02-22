@@ -51,6 +51,7 @@ class BDDLBaseDomain(SingleArmEnv):
         reward_shaping=False,
         subtask_reward=False,
         subtask_reward_scale=0.5,
+        track_subtask_info=False,
         placement_initializer=None,
         object_property_initializers=None,
         has_renderer=False,
@@ -86,7 +87,17 @@ class BDDLBaseDomain(SingleArmEnv):
         # a sparse 0/1 signal; step() also populates info["subtask_rewards"]
         self.subtask_reward = subtask_reward
         self.subtask_reward_scale = subtask_reward_scale
+        # when True, info["subtask_info"] is populated every step regardless of
+        # subtask_reward, using dry_run=True so one-shot tracking is unaffected.
+        # Useful for eval-time diagnostics without shaping the reward signal.
+        self.track_subtask_info = track_subtask_info
+        # Caches _evaluate_subtask_rewards() result produced inside reward() so
+        # step() can copy it into info without a second physics evaluation.
         self._subtask_satisfied_cache: dict = {}
+        # Tracks which subtask names have been satisfied at any point in the
+        # current episode.  Once a subtask enters this set it stays credited
+        # (one-shot reward), preventing reward cycling.  Cleared on reset().
+        self._subtask_ever_satisfied: set = set()
 
         self.use_object_obs = use_object_obs
 
@@ -246,30 +257,53 @@ class BDDLBaseDomain(SingleArmEnv):
                 return False
         return True
 
-    def _evaluate_subtask_rewards(self):
-        """Evaluate each subtask predicate independently and return satisfaction status.
+    def _evaluate_subtask_rewards(self, dry_run: bool = False):
+        """Evaluate subtask predicates and return per-subtask satisfaction status.
 
         Returns a dict mapping subtask name (or predicate key) to bool.
 
+        One-shot semantics: once a subtask is satisfied it stays True for the
+        rest of the episode (_subtask_ever_satisfied), even if the predicate
+        later becomes False again.  This prevents the agent from cycling a
+        subtask condition to farm reward.  The set is cleared on reset().
+
         Fine-grained mode (BDDL has a :subtask_rewards section):
-            Evaluates each named subtask in declaration order.  A subtask
-            whose :after prerequisites are not all satisfied returns False
-            without evaluating its predicate (hard prerequisite gate).
+            Evaluates in declaration order.  A subtask whose :after
+            prerequisites have *never* been satisfied returns False without
+            evaluating its predicate (hard prerequisite gate).  Prerequisites
+            use the ever-satisfied set so unlocking persists even if the
+            prerequisite predicate later becomes False.
 
         Coarse fallback (no :subtask_rewards section):
-            Each predicate in (:goal ...) is treated as an independent subtask
-            with equal reward weight.  No ordering is enforced.
+            Each predicate in (:goal ...) is an independent subtask with equal
+            reward weight.  No ordering is enforced.
+
+        Args:
+            dry_run: When True, evaluate predicates but do NOT update
+                _subtask_ever_satisfied.  Use this for inspection and testing
+                to avoid inadvertently crediting a subtask.
         """
         fine = self.parsed_problem.get("subtask_rewards", [])
         if fine:
             satisfied = {}
             for s in fine:
-                prereqs_met = all(satisfied.get(p, False) for p in s["after"])
+                name = s["name"]
+                if name in self._subtask_ever_satisfied:
+                    # Already credited this episode — no re-evaluation needed.
+                    satisfied[name] = True
+                    continue
+                # Prerequisites must have been satisfied at some point.
+                prereqs_met = all(p in self._subtask_ever_satisfied for p in s["after"])
                 if prereqs_met:
                     args = [self.object_states_dict[a] for a in s["predicate_args"]]
-                    satisfied[s["name"]] = bool(s["predicate_fn"](*args))
+                    if bool(s["predicate_fn"](*args)):
+                        if not dry_run:
+                            self._subtask_ever_satisfied.add(name)
+                        satisfied[name] = True
+                    else:
+                        satisfied[name] = False
                 else:
-                    satisfied[s["name"]] = False
+                    satisfied[name] = False
             return satisfied
         else:
             # Coarse: every goal predicate becomes a subtask with equal weight.
@@ -277,8 +311,16 @@ class BDDLBaseDomain(SingleArmEnv):
             results = {}
             for pred in goal_state:
                 key = "_".join(pred)
+                if key in self._subtask_ever_satisfied:
+                    results[key] = True
+                    continue
                 args = [self.object_states_dict[a] for a in pred[1:]]
-                results[key] = bool(eval_predicate_fn(pred[0], *args))
+                if bool(eval_predicate_fn(pred[0], *args)):
+                    if not dry_run:
+                        self._subtask_ever_satisfied.add(key)
+                    results[key] = True
+                else:
+                    results[key] = False
             return results
 
     # ------------------------------------------------------------------
@@ -685,6 +727,9 @@ class BDDLBaseDomain(SingleArmEnv):
             })
 
     def _reset_internal(self):
+        # Clear per-episode reward state so each new episode starts fresh.
+        self._subtask_ever_satisfied = set()
+        self._subtask_satisfied_cache = {}
         super()._reset_internal()
 
         if not self.deterministic_reset:
@@ -733,6 +778,13 @@ class BDDLBaseDomain(SingleArmEnv):
         if self.subtask_reward:
             # reward() already evaluated and cached this during super().step().
             info["subtask_rewards"] = self._subtask_satisfied_cache
+
+        if self.track_subtask_info:
+            # Eval-mode diagnostic: evaluate subtask completion without shaping
+            # the reward.  dry_run=True leaves _subtask_ever_satisfied untouched
+            # so the one-shot semantics remain correct when used alongside
+            # subtask_reward=True, or are simply inert when used alone.
+            info["subtask_info"] = self._evaluate_subtask_rewards(dry_run=True)
 
         return obs, reward, done, info
 

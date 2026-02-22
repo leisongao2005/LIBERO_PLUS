@@ -1,0 +1,80 @@
+(define (problem LIBERO_Study_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language turn on the stove and put the moka pot on it)
+    (:regions
+      (flat_stove_init_region
+          (:target study_table)
+          (:ranges (
+              (-0.2 -0.2 -0.18 0)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (frypan_init_region
+          (:target study_table)
+          (:ranges (
+              (0.13 0.15 0.15 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (-1.57 1.57)
+            )
+          )
+      )
+      (moka_pot_init_region
+          (:target study_table)
+          (:ranges (
+              (0.12 -0.3 0.15 -0.05)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (cook_region
+          (:target flat_stove_1)
+      )
+    )
+
+  (:fixtures
+    study_table - study_table
+    flat_stove_1 - flat_stove
+  )
+
+  (:objects
+    chefmate_8_frypan_1 - chefmate_8_frypan
+    moka_pot_1 - moka_pot
+  )
+
+  (:obj_of_interest
+    moka_pot_1
+    flat_stove_1
+  )
+
+  (:init
+    (On flat_stove_1 study_table_flat_stove_init_region)
+    (On chefmate_8_frypan_1 study_table_frypan_init_region)
+    (On moka_pot_1 study_table_moka_pot_init_region)
+  )
+
+  (:goal
+    (And (Turnon flat_stove_1) (On moka_pot_1 flat_stove_1_cook_region))
+  )
+
+
+  (:subtask_rewards
+    (:subtask turnon_stove
+      (:predicate (Turnon flat_stove_1))
+      (:reward 1.0)
+    )
+    (:subtask place_moka_pot_1
+      (:predicate (On moka_pot_1 flat_stove_1_cook_region))
+      (:reward 1.0)
+    )
+  )
+
+)

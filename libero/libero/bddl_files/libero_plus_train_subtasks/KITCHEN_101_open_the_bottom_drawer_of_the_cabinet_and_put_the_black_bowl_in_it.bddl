@@ -1,0 +1,90 @@
+(define (problem LIBERO_Kitchen_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language open the bottom drawer of the cabinet and put the black bowl in it)
+    (:regions
+      (wooden_cabinet_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.2 -0.3 0.15 -0.15)
+            )
+          )
+          (:yaw_rotation (
+              (2.36 3.92)
+            )
+          )
+      )
+      (akita_black_bowl_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (0.05 0.1 0.15 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (plate_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.2 0.1 -0.05 0.3)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.28)
+            )
+          )
+      )
+      (top_side
+          (:target wooden_cabinet_1)
+      )
+      (top_region
+          (:target wooden_cabinet_1)
+      )
+      (middle_region
+          (:target wooden_cabinet_1)
+      )
+      (bottom_region
+          (:target wooden_cabinet_1)
+      )
+    )
+
+  (:fixtures
+    kitchen_table - kitchen_table
+    wooden_cabinet_1 - wooden_cabinet
+  )
+
+  (:objects
+    akita_black_bowl_1 - akita_black_bowl
+    plate_1 - plate
+  )
+
+  (:obj_of_interest
+    akita_black_bowl_1
+    wooden_cabinet_1
+  )
+
+  (:init
+    (On akita_black_bowl_1 kitchen_table_akita_black_bowl_init_region)
+    (On wooden_cabinet_1 kitchen_table_wooden_cabinet_init_region)
+    (On plate_1 kitchen_table_plate_init_region)
+  )
+
+  (:goal
+    (And (Open wooden_cabinet_1_bottom_region) (In akita_black_bowl_1 wooden_cabinet_1_bottom_region))
+  )
+
+
+  (:subtask_rewards
+    (:subtask open_cabinet_bottom
+      (:predicate (Open wooden_cabinet_1_bottom_region))
+      (:reward 1.0)
+    )
+    (:subtask place_akita_black_bowl_1
+      (:predicate (In akita_black_bowl_1 wooden_cabinet_1_bottom_region))
+      (:reward 1.0)
+      (:after open_cabinet_bottom)
+    )
+  )
+
+)
