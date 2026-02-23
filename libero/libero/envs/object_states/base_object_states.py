@@ -3,6 +3,7 @@ import numpy as np
 
 
 class BaseObjectState:
+
     def __init__(self):
         pass
 
@@ -32,23 +33,18 @@ class BaseObjectState:
 
 
 class ObjectState(BaseObjectState):
+
     def __init__(self, env, object_name, is_fixture=False):
         self.env = env
         self.object_name = object_name
         self.is_fixture = is_fixture
-        self.query_dict = (
-            self.env.fixtures_dict if self.is_fixture else self.env.objects_dict
-        )
+        self.query_dict = (self.env.fixtures_dict if self.is_fixture else self.env.objects_dict)
         self.object_state_type = "object"
-        self.has_turnon_affordance = hasattr(
-            self.env.get_object(self.object_name), "turn_on"
-        )
+        self.has_turnon_affordance = hasattr(self.env.get_object(self.object_name), "turn_on")
 
     def get_geom_state(self):
         object_pos = self.env.sim.data.body_xpos[self.env.obj_body_id[self.object_name]]
-        object_quat = self.env.sim.data.body_xquat[
-            self.env.obj_body_id[self.object_name]
-        ]
+        object_quat = self.env.sim.data.body_xquat[self.env.obj_body_id[self.object_name]]
         return {"pos": object_pos, "quat": object_quat}
 
     def check_contact(self, other):
@@ -58,13 +54,9 @@ class ObjectState(BaseObjectState):
 
     def check_contain(self, other):
         object_1 = self.env.get_object(self.object_name)
-        object_1_position = self.env.sim.data.body_xpos[
-            self.env.obj_body_id[self.object_name]
-        ]
+        object_1_position = self.env.sim.data.body_xpos[self.env.obj_body_id[self.object_name]]
         object_2 = self.env.get_object(other.object_name)
-        object_2_position = self.env.sim.data.body_xpos[
-            self.env.obj_body_id[other.object_name]
-        ]
+        object_2_position = self.env.sim.data.body_xpos[self.env.obj_body_id[other.object_name]]
         return object_1.in_box(object_1_position, object_2_position)
 
     def get_joint_state(self):
@@ -144,16 +136,12 @@ class SiteObjectState(BaseObjectState):
         self.object_name = object_name
         self.parent_name = parent_name
         self.is_fixture = self.parent_name in self.env.fixtures_dict
-        self.query_dict = (
-            self.env.fixtures_dict if self.is_fixture else self.env.objects_dict
-        )
+        self.query_dict = (self.env.fixtures_dict if self.is_fixture else self.env.objects_dict)
         self.object_state_type = "site"
 
     def get_geom_state(self):
         object_pos = self.env.sim.data.get_site_xpos(self.object_name)
-        object_quat = transform_utils.mat2quat(
-            self.env.sim.data.get_site_xmat(self.object_name)
-        )
+        object_quat = transform_utils.mat2quat(self.env.sim.data.get_site_xmat(self.object_name))
         return {"pos": object_pos, "quat": object_quat}
 
     def check_contain(self, other):
@@ -162,12 +150,8 @@ class SiteObjectState(BaseObjectState):
         this_object_mat = self.env.sim.data.get_site_xmat(self.object_name)
 
         other_object = self.env.get_object(other.object_name)
-        other_object_position = self.env.sim.data.body_xpos[
-            self.env.obj_body_id[other.object_name]
-        ]
-        return this_object.in_box(
-            this_object_position, this_object_mat, other_object_position
-        )
+        other_object_position = self.env.sim.data.body_xpos[self.env.obj_body_id[other.object_name]]
+        return this_object.in_box(this_object_position, this_object_mat, other_object_position)
 
     def check_contact(self, other):
         """
@@ -181,21 +165,19 @@ class SiteObjectState(BaseObjectState):
             this_object_position = self.env.sim.data.get_site_xpos(self.object_name)
             this_object_mat = self.env.sim.data.get_site_xmat(self.object_name)
             other_object = self.env.get_object(other.object_name)
-            other_object_position = self.env.sim.data.body_xpos[
-                self.env.obj_body_id[other.object_name]
-            ]
+            other_object_position = self.env.sim.data.body_xpos[self.env.obj_body_id[
+                other.object_name]]
             # print(self.object_name, this_object_position)
             # print(other_object_position)
 
             parent_object = self.env.get_object(self.parent_name)
             if parent_object is None:
-                return this_object.under(
-                    this_object_position, this_object_mat, other_object_position
-                )
+                return this_object.under(this_object_position, this_object_mat,
+                                         other_object_position)
             else:
-                return this_object.under(
-                    this_object_position, this_object_mat, other_object_position
-                ) and self.env.check_contact(parent_object, other_object)
+                return this_object.under(this_object_position, this_object_mat,
+                                         other_object_position) and self.env.check_contact(
+                                             parent_object, other_object)
         else:
             return True
 

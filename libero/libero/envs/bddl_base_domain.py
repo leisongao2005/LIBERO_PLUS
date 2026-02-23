@@ -286,19 +286,26 @@ class BDDLBaseDomain(SingleArmEnv):
         fine = self.parsed_problem.get("subtask_rewards", [])
         if fine:
             satisfied = {}
+            # local_ever tracks intra-call propagation: if subtask A is
+            # satisfied in this call, its dependents can be unlocked in the
+            # same call.  In dry_run mode we intentionally do NOT write back
+            # to self._subtask_ever_satisfied (avoids side-effects), but we
+            # still need local propagation so :after chains resolve correctly.
+            local_ever = set(self._subtask_ever_satisfied)
             for s in fine:
                 name = s["name"]
-                if name in self._subtask_ever_satisfied:
+                if name in local_ever:
                     # Already credited this episode — no re-evaluation needed.
                     satisfied[name] = True
                     continue
                 # Prerequisites must have been satisfied at some point.
-                prereqs_met = all(p in self._subtask_ever_satisfied for p in s["after"])
+                prereqs_met = all(p in local_ever for p in s["after"])
                 if prereqs_met:
                     args = [self.object_states_dict[a] for a in s["predicate_args"]]
                     if bool(s["predicate_fn"](*args)):
                         if not dry_run:
                             self._subtask_ever_satisfied.add(name)
+                        local_ever.add(name)
                         satisfied[name] = True
                     else:
                         satisfied[name] = False
@@ -772,12 +779,32 @@ class BDDLBaseDomain(SingleArmEnv):
             action = np.array(action)
             action = np.concatenate((action[:3], action[-1:]), axis=-1)
 
+        # Snapshot before step so we can compute newly satisfied (incremental).
+        prev_ever_satisfied = set(self._subtask_ever_satisfied) if self.subtask_reward else set()
+
         obs, reward, done, info = super().step(action)
         done = self._check_success()
 
         if self.subtask_reward:
             # reward() already evaluated and cached this during super().step().
             info["subtask_rewards"] = self._subtask_satisfied_cache
+            # Incremental scalar rewards: only newly satisfied this step (one-shot).
+            newly = self._subtask_ever_satisfied - prev_ever_satisfied
+            incremental = {}
+            fine = self.parsed_problem.get("subtask_rewards", [])
+            if fine:
+                name_to_reward = {s["name"]: s["reward"] for s in fine}
+                for name in newly:
+                    if name in name_to_reward:
+                        incremental[name] = name_to_reward[name]
+            else:
+                # Coarse: equal share of subtask_reward_scale per subtask.
+                goal_state = self.parsed_problem.get("goal_state", [])
+                n_total = max(len(goal_state), 1)
+                weight = self.subtask_reward_scale / n_total
+                for name in newly:
+                    incremental[name] = weight
+            info["subtask_reward"] = incremental
 
         if self.track_subtask_info:
             # Eval-mode diagnostic: evaluate subtask completion without shaping

@@ -39,8 +39,7 @@ def raw_obs_to_tensor_obs(obs, task_emb, cfg):
                 ObsUtils.process_obs(
                     torch.from_numpy(obs[k][cfg.data.obs_key_mapping[obs_name]]),
                     obs_key=obs_name,
-                ).float()
-            )
+                ).float())
 
     for key in data["obs"]:
         data["obs"][key] = torch.stack(data["obs"][key])
@@ -49,9 +48,7 @@ def raw_obs_to_tensor_obs(obs, task_emb, cfg):
     return data
 
 
-def evaluate_one_task_success(
-    cfg, algo, task, task_emb, task_id, sim_states=None, task_str=""
-):
+def evaluate_one_task_success(cfg, algo, task, task_emb, task_id, sim_states=None, task_str=""):
     """
     Evaluate a single task's success rate
     sim_states: if not None, will keep track of all simulated states during
@@ -68,9 +65,7 @@ def evaluate_one_task_success(
 
         # initiate evaluation envs
         env_args = {
-            "bddl_file_name": os.path.join(
-                cfg.bddl_folder, task.problem_folder, task.bddl_file
-            ),
+            "bddl_file_name": os.path.join(cfg.bddl_folder, task.problem_folder, task.bddl_file),
             "camera_heights": cfg.data.img_h,
             "camera_widths": cfg.data.img_w,
         }
@@ -86,12 +81,10 @@ def evaluate_one_task_success(
             try:
                 if env_num == 1:
                     env = DummyVectorEnv(
-                        [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
-                    )
+                        [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)])
                 else:
                     env = SubprocVectorEnv(
-                        [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
-                    )
+                        [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)])
                 env_creation = True
             except:
                 time.sleep(5)
@@ -101,10 +94,9 @@ def evaluate_one_task_success(
 
         ### Evaluation loop
         # get fixed init states to control the experiment randomness
-        init_states_path = os.path.join(
-            cfg.init_states_folder, task.problem_folder, task.init_states_file
-        )
-        init_states = torch.load(init_states_path)
+        init_states_path = os.path.join(cfg.init_states_folder, task.problem_folder,
+                                        task.init_states_file)
+        init_states = torch.load(init_states_path, weights_only=False)
         num_success = 0
         for i in range(eval_loop_num):
             env.reset()
@@ -172,9 +164,13 @@ def evaluate_success(cfg, algo, benchmark, task_ids, result_summary=None):
         task_emb = benchmark.get_task_emb(i)
         task_str = f"k{task_ids[-1]}_p{i}"
         curr_summary = result_summary[task_str] if result_summary is not None else None
-        success_rate = evaluate_one_task_success(
-            cfg, algo, task_i, task_emb, i, sim_states=curr_summary, task_str=task_str
-        )
+        success_rate = evaluate_one_task_success(cfg,
+                                                 algo,
+                                                 task_i,
+                                                 task_emb,
+                                                 i,
+                                                 sim_states=curr_summary,
+                                                 task_str=task_str)
         successes.append(success_rate)
     return np.array(successes)
 
@@ -212,9 +208,7 @@ def evaluate_loss(cfg, algo, benchmark, datasets):
         )
         test_loss = 0
         for data in dataloader:
-            data = TensorUtils.map_tensor(
-                data, lambda x: safe_device(x, device=cfg.device)
-            )
+            data = TensorUtils.map_tensor(data, lambda x: safe_device(x, device=cfg.device))
             loss = algo.policy.compute_loss(data)
             test_loss += loss.item()
         test_loss /= len(dataloader)

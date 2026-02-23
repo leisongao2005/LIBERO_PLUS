@@ -46,7 +46,6 @@ import robomimic.utils.tensor_utils as TensorUtils
 
 import time
 
-
 benchmark_map = {
     "libero_10": "LIBERO_10",
     "libero_spatial": "LIBERO_SPATIAL",
@@ -104,13 +103,9 @@ def parse_args():
     args.save_dir = f"{args.experiment_dir}_saved"
 
     if args.algo == "multitask":
-        assert args.ep in list(
-            range(0, 50, 5)
-        ), "[error] ep should be in [0, 5, ..., 50]"
+        assert args.ep in list(range(0, 50, 5)), "[error] ep should be in [0, 5, ..., 50]"
     else:
-        assert args.load_task in list(
-            range(10)
-        ), "[error] load_task should be in [0, ..., 9]"
+        assert args.load_task in list(range(10)), "[error] load_task should be in [0, ..., 9]"
     return args
 
 
@@ -120,9 +115,8 @@ def main():
 
     experiment_dir = os.path.join(
         args.experiment_dir,
-        f"{benchmark_map[args.benchmark]}/"
-        + f"{algo_map[args.algo]}/"
-        + f"{policy_map[args.policy]}_seed{args.seed}",
+        f"{benchmark_map[args.benchmark]}/" + f"{algo_map[args.algo]}/" +
+        f"{policy_map[args.policy]}_seed{args.seed}",
     )
 
     # find the checkpoint
@@ -144,14 +138,10 @@ def main():
     try:
         if args.algo == "multitask":
             model_path = os.path.join(run_folder, f"multitask_model_ep{args.ep}.pth")
-            sd, cfg, previous_mask = torch_load_model(
-                model_path, map_location=args.device_id
-            )
+            sd, cfg, previous_mask = torch_load_model(model_path, map_location=args.device_id)
         else:
             model_path = os.path.join(run_folder, f"task{args.load_task}_model.pth")
-            sd, cfg, previous_mask = torch_load_model(
-                model_path, map_location=args.device_id
-            )
+            sd, cfg, previous_mask = torch_load_model(model_path, map_location=args.device_id)
     except:
         print(f"[error] cannot find the checkpoint at {str(model_path)}")
         sys.exit(0)
@@ -194,16 +184,12 @@ def main():
     # 1. evaluate dataset loss
     try:
         dataset, shape_meta = get_dataset(
-            dataset_path=os.path.join(
-                cfg.folder, benchmark.get_task_demonstration(args.task_id)
-            ),
+            dataset_path=os.path.join(cfg.folder, benchmark.get_task_demonstration(args.task_id)),
             obs_modality=cfg.data.obs.modality,
             initialize_obs_utils=True,
             seq_len=cfg.data.seq_len,
         )
-        dataset = GroupedTaskDataset(
-            [dataset], task_embs[args.task_id : args.task_id + 1]
-        )
+        dataset = GroupedTaskDataset([dataset], task_embs[args.task_id:args.task_id + 1])
     except:
         print(
             f"[error] failed to load task {args.task_id} name {benchmark.get_task_names()[args.task_id]}"
@@ -233,25 +219,20 @@ def main():
 
     with Timer() as t, VideoWriter(video_folder, args.save_videos) as video_writer:
         env_args = {
-            "bddl_file_name": os.path.join(
-                cfg.bddl_folder, task.problem_folder, task.bddl_file
-            ),
+            "bddl_file_name": os.path.join(cfg.bddl_folder, task.problem_folder, task.bddl_file),
             "camera_heights": cfg.data.img_h,
             "camera_widths": cfg.data.img_w,
         }
 
         env_num = 20
-        env = SubprocVectorEnv(
-            [lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)]
-        )
+        env = SubprocVectorEnv([lambda: OffScreenRenderEnv(**env_args) for _ in range(env_num)])
         env.reset()
         env.seed(cfg.seed)
         algo.reset()
 
-        init_states_path = os.path.join(
-            cfg.init_states_folder, task.problem_folder, task.init_states_file
-        )
-        init_states = torch.load(init_states_path)
+        init_states_path = os.path.join(cfg.init_states_folder, task.problem_folder,
+                                        task.init_states_file)
+        init_states = torch.load(init_states_path, weights_only=False)
         indices = np.arange(env_num) % init_states.shape[0]
         init_states_ = init_states[indices]
 
@@ -271,9 +252,7 @@ def main():
                 data = raw_obs_to_tensor_obs(obs, task_emb, cfg)
                 actions = algo.policy.get_action(data)
                 obs, reward, done, info = env.step(actions)
-                video_writer.append_vector_obs(
-                    obs, dones, camera_name="agentview_image"
-                )
+                video_writer.append_vector_obs(obs, dones, camera_name="agentview_image")
 
                 # check whether succeed
                 for k in range(env_num):
@@ -294,9 +273,7 @@ def main():
 
         os.system(f"mkdir -p {args.save_dir}")
         torch.save(eval_stats, save_folder)
-    print(
-        f"[info] finish for ckpt at {run_folder} in {t.get_elapsed_time()} sec for rollouts"
-    )
+    print(f"[info] finish for ckpt at {run_folder} in {t.get_elapsed_time()} sec for rollouts")
     print(f"Results are saved at {save_folder}")
     print(test_loss, success_rate)
 

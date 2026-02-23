@@ -33,6 +33,7 @@ def safe_device(x, device="cpu"):
 
 
 class NpEncoder(json.JSONEncoder):
+
     def default(self, obj):
         if isinstance(obj, np.integer):
             return int(obj)
@@ -56,7 +57,7 @@ def torch_save_model(model, model_path, cfg=None, previous_masks=None):
 
 
 def torch_load_model(model_path, map_location=None):
-    model_dict = torch.load(model_path, map_location=map_location)
+    model_dict = torch.load(model_path, map_location=map_location, weights_only=False)
     cfg = None
     if "cfg" in model_dict:
         cfg = model_dict["cfg"]
@@ -65,15 +66,15 @@ def torch_load_model(model_path, map_location=None):
     return model_dict["state_dict"], cfg, previous_masks
 
 
-def get_train_test_loader(
-    dataset, train_ratio, train_batch_size, test_batch_size, num_workers=(0, 0)
-):
+def get_train_test_loader(dataset,
+                          train_ratio,
+                          train_batch_size,
+                          test_batch_size,
+                          num_workers=(0, 0)):
 
     train_size = int(len(dataset) * train_ratio)
     test_size = len(dataset) - train_size
-    train_dataset, test_dataset = torch.utils.data.random_split(
-        dataset, [train_size, test_size]
-    )
+    train_dataset, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -121,10 +122,8 @@ def create_experiment_dir(cfg):
     if cfg.task_embedding_format == "roberta":
         prefix += f"_roberta"
 
-    experiment_dir = (
-        f"./{prefix}/{cfg.benchmark_name}/{cfg.lifelong.algo}/"
-        + f"{cfg.policy.policy_type}_seed{cfg.seed}"
-    )
+    experiment_dir = (f"./{prefix}/{cfg.benchmark_name}/{cfg.lifelong.algo}/" +
+                      f"{cfg.policy.policy_type}_seed{cfg.seed}")
 
     if not os.path.exists(experiment_dir):
         os.makedirs(experiment_dir)
@@ -159,12 +158,8 @@ def get_task_embs(cfg, descriptions):
         descriptions = [f"Task {i+offset}" for i in range(len(descriptions))]
 
     if cfg.task_embedding_format == "bert" or cfg.task_embedding_format == "one-hot":
-        tz = AutoTokenizer.from_pretrained(
-            "bert-base-cased", cache_dir=to_absolute_path("./bert")
-        )
-        model = AutoModel.from_pretrained(
-            "bert-base-cased", cache_dir=to_absolute_path("./bert")
-        )
+        tz = AutoTokenizer.from_pretrained("bert-base-cased", cache_dir=to_absolute_path("./bert"))
+        model = AutoModel.from_pretrained("bert-base-cased", cache_dir=to_absolute_path("./bert"))
         tokens = tz(
             text=descriptions,  # the sentence to be encoded
             add_special_tokens=True,  # Add [CLS] and [SEP]
@@ -175,9 +170,7 @@ def get_task_embs(cfg, descriptions):
         )
         masks = tokens["attention_mask"]
         input_ids = tokens["input_ids"]
-        task_embs = model(tokens["input_ids"], tokens["attention_mask"])[
-            "pooler_output"
-        ].detach()
+        task_embs = model(tokens["input_ids"], tokens["attention_mask"])["pooler_output"].detach()
     elif cfg.task_embedding_format == "gpt2":
         tz = AutoTokenizer.from_pretrained("gpt2")
         tz.pad_token = tz.eos_token

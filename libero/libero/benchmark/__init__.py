@@ -1,6 +1,7 @@
 import abc
 import os
 import glob
+import logging
 import random
 import torch
 
@@ -68,6 +69,8 @@ libero_suites = [
     "custom_eval_easy",
     "custom_eval_hard",
     "libero_10_subtasks",
+    "libero_plus_train_subtasks",
+    "libero_plus_eval_subtasks",
 ]
 
 task_maps = {}
@@ -169,9 +172,8 @@ class Benchmark(abc.ABC):
             self.tasks[i].problem_folder,
             self.tasks[i].init_states_file,
         )
-        init_states = torch.load(init_states_path)
-        print(f"loading init states for {self.name} from {init_states_path}")
-        # init_states = torch.load(init_states_path, weights_only=False) # for torch 2.6
+        init_states = torch.load(init_states_path, weights_only=False)
+        logging.debug(f"loading init states for {self.name} from {init_states_path}")
         return init_states
 
     def set_task_embs(self, task_embs):
@@ -322,6 +324,36 @@ class LIBERO_10_SUBTASKS(Benchmark):
     def __init__(self, task_order_index=0):
         super().__init__(task_order_index=task_order_index)
         self.name = "libero_10_subtasks"
+        self._make_benchmark()
+
+    def _make_benchmark(self):
+        tasks = list(task_maps[self.name].values())
+        self.tasks = tasks
+        self.n_tasks = len(self.tasks)
+
+
+@register_benchmark
+class LIBERO_PLUS_TRAIN_SUBTASKS(Benchmark):
+    """LIBERO-Plus training tasks with fine-grained subtask rewards in their BDDL files."""
+
+    def __init__(self, task_order_index=0):
+        super().__init__(task_order_index=task_order_index)
+        self.name = "libero_plus_train_subtasks"
+        self._make_benchmark()
+
+    def _make_benchmark(self):
+        tasks = list(task_maps[self.name].values())
+        self.tasks = tasks
+        self.n_tasks = len(self.tasks)
+
+
+@register_benchmark
+class LIBERO_PLUS_EVAL_SUBTASKS(Benchmark):
+    """LIBERO-Plus evaluation tasks with fine-grained subtask rewards in their BDDL files."""
+
+    def __init__(self, task_order_index=0):
+        super().__init__(task_order_index=task_order_index)
+        self.name = "libero_plus_eval_subtasks"
         self._make_benchmark()
 
     def _make_benchmark(self):
