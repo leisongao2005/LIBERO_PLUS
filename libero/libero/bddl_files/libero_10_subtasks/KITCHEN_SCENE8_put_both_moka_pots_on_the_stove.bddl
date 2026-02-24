@@ -75,10 +75,6 @@
       (:predicate (On moka_pot_2 flat_stove_1_cook_region))
       (:reward 1.0)
     )
-    (:subtask keep_stove_on
-      (:predicate (Turnon flat_stove_1))
-      (:reward 1.0)
-    )
   )
 
 )
