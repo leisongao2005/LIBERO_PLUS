@@ -10,10 +10,12 @@ def parse_subtask_rewards(group):
     Each element of the returned list is a dict:
       {
         "name":          str,
+        "predicate_name": str,
         "predicate_fn":  callable,    # pre-instantiated with any numeric params
         "predicate_args": list[str],  # object-name tokens resolved at reward time
         "reward":        float,       # fractional weight; all weights sum to 1.0
         "after":         list[str],   # prerequisite subtask names (:after ordering)
+        "confirm_steps": int | None,  # optional per-subtask delay override
       }
 
     Predicates with numeric thresholds (NearEEF, Near) are instantiated here so
@@ -32,9 +34,11 @@ def parse_subtask_rewards(group):
         assert item[0] == ":subtask", f"Expected ':subtask', got '{item[0]}'"
         name = item[1]
         pred_fn = None
+        pred_name = None
         pred_args = []
         reward = None
         after = []
+        confirm_steps = None
 
         for attr in item[2:]:
             key = attr[0]
@@ -62,15 +66,19 @@ def parse_subtask_rewards(group):
                 reward = float(attr[1])
             elif key == ":after":
                 after = list(attr[1:])
+            elif key == ":confirm_steps":
+                confirm_steps = int(attr[1])
 
         assert pred_fn is not None, f"Subtask '{name}' has no :predicate attribute"
         subtasks.append(
             {
                 "name": name,
+                "predicate_name": pred_name,
                 "predicate_fn": pred_fn,
                 "predicate_args": pred_args,
                 "reward": reward,
                 "after": after,
+                "confirm_steps": confirm_steps,
             }
         )
 

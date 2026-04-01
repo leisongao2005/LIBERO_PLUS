@@ -51,6 +51,7 @@ class BDDLBaseDomain(SingleArmEnv):
         reward_shaping=False,
         subtask_reward=False,
         subtask_reward_scale=0.5,
+        subtask_confirmation_steps=4,
         track_subtask_info=False,
         placement_initializer=None,
         object_property_initializers=None,
@@ -87,6 +88,7 @@ class BDDLBaseDomain(SingleArmEnv):
         # a sparse 0/1 signal; step() also populates info["subtask_rewards"]
         self.subtask_reward = subtask_reward
         self.subtask_reward_scale = subtask_reward_scale
+        self.subtask_confirmation_steps = subtask_confirmation_steps
         # when True, info["subtask_info"] is populated every step regardless of
         # subtask_reward, using dry_run=True so one-shot tracking is unaffected.
         # Useful for eval-time diagnostics without shaping the reward signal.
@@ -98,6 +100,8 @@ class BDDLBaseDomain(SingleArmEnv):
         # current episode.  Once a subtask enters this set it stays credited
         # (one-shot reward), preventing reward cycling.  Cleared on reset().
         self._subtask_ever_satisfied: set = set()
+        # Tracks pending confirmations for delayed On / In subtasks.
+        self._subtask_confirmation_counts: dict = {}
 
         self.use_object_obs = use_object_obs
 
@@ -284,6 +288,7 @@ class BDDLBaseDomain(SingleArmEnv):
                 to avoid inadvertently crediting a subtask.
         """
         fine = self.parsed_problem.get("subtask_rewards", [])
+        confirmation_counts = deepcopy(self._subtask_confirmation_counts)
         if fine:
             satisfied = {}
             # local_ever tracks intra-call propagation: if subtask A is
@@ -302,15 +307,30 @@ class BDDLBaseDomain(SingleArmEnv):
                 prereqs_met = all(p in local_ever for p in s["after"])
                 if prereqs_met:
                     args = [self.object_states_dict[a] for a in s["predicate_args"]]
-                    if bool(s["predicate_fn"](*args)):
-                        if not dry_run:
-                            self._subtask_ever_satisfied.add(name)
-                        local_ever.add(name)
-                        satisfied[name] = True
+                    if self._subtask_candidate_valid(s["predicate_name"], s["predicate_fn"], args):
+                        if s["predicate_name"] in {"on", "in"}:
+                            confirmation_counts[name] = confirmation_counts.get(name, 0) + 1
+                            confirm_steps = s.get("confirm_steps") or self.subtask_confirmation_steps
+                            is_confirmed = confirmation_counts[name] >= confirm_steps
+                        else:
+                            confirmation_counts[name] = 0
+                            is_confirmed = True
+
+                        if is_confirmed:
+                            if not dry_run:
+                                self._subtask_ever_satisfied.add(name)
+                            local_ever.add(name)
+                            satisfied[name] = True
+                        else:
+                            satisfied[name] = False
                     else:
+                        confirmation_counts[name] = 0
                         satisfied[name] = False
                 else:
+                    confirmation_counts[name] = 0
                     satisfied[name] = False
+            if not dry_run:
+                self._subtask_confirmation_counts = confirmation_counts
             return satisfied
         else:
             # Coarse: every goal predicate becomes a subtask with equal weight.
@@ -322,13 +342,53 @@ class BDDLBaseDomain(SingleArmEnv):
                     results[key] = True
                     continue
                 args = [self.object_states_dict[a] for a in pred[1:]]
-                if bool(eval_predicate_fn(pred[0], *args)):
-                    if not dry_run:
-                        self._subtask_ever_satisfied.add(key)
-                    results[key] = True
+                pred_name = pred[0].lower()
+                if self._subtask_candidate_valid(pred_name, lambda *call_args: eval_predicate_fn(
+                        pred_name, *call_args), args):
+                    if pred_name in {"on", "in"}:
+                        confirmation_counts[key] = confirmation_counts.get(key, 0) + 1
+                        is_confirmed = confirmation_counts[key] >= self.subtask_confirmation_steps
+                    else:
+                        confirmation_counts[key] = 0
+                        is_confirmed = True
+
+                    if is_confirmed:
+                        if not dry_run:
+                            self._subtask_ever_satisfied.add(key)
+                        results[key] = True
+                    else:
+                        results[key] = False
                 else:
+                    confirmation_counts[key] = 0
                     results[key] = False
+            if not dry_run:
+                self._subtask_confirmation_counts = confirmation_counts
             return results
+
+    def _resolve_contact_object(self, object_state):
+        """Resolve an ObjectState / SiteObjectState to a real Mujoco object for contact checks."""
+        if getattr(object_state, "object_state_type", None) == "site":
+            return self.get_object(object_state.parent_name)
+        return self.get_object(object_state.object_name)
+
+    def _robot_not_in_contact(self, object_state):
+        """Return True when the robot gripper is no longer touching the relevant object."""
+        robot = self.robots[0]
+        target_object = self._resolve_contact_object(object_state)
+        if target_object is None:
+            return True
+        return not self.check_contact(robot.gripper, target_object)
+
+    def _subtask_candidate_valid(self, predicate_name, predicate_fn, args):
+        """Apply release-aware gating on top of the existing instantaneous predicate."""
+        if not bool(predicate_fn(*args)):
+            return False
+        predicate_name = predicate_name.lower()
+        if predicate_name in {"on", "in"}:
+            return bool(args) and self._robot_not_in_contact(args[0])
+        if predicate_name in {"open", "close", "turnon", "turnoff"}:
+            return bool(args) and self._robot_not_in_contact(args[0])
+        return True
 
     # ------------------------------------------------------------------
     # Abstract arena-loading hooks (implemented by problem subclasses)
@@ -737,6 +797,7 @@ class BDDLBaseDomain(SingleArmEnv):
         # Clear per-episode reward state so each new episode starts fresh.
         self._subtask_ever_satisfied = set()
         self._subtask_satisfied_cache = {}
+        self._subtask_confirmation_counts = {}
         super()._reset_internal()
 
         if not self.deterministic_reset:
