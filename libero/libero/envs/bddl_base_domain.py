@@ -51,7 +51,7 @@ class BDDLBaseDomain(SingleArmEnv):
         reward_shaping=False,
         subtask_reward=False,
         subtask_reward_scale=0.5,
-        subtask_confirmation_steps=4,
+        subtask_confirmation_steps=10,
         track_subtask_info=False,
         placement_initializer=None,
         object_property_initializers=None,
@@ -85,7 +85,8 @@ class BDDLBaseDomain(SingleArmEnv):
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
         # when True, reward() returns a fractional subtask reward instead of
-        # a sparse 0/1 signal; step() also populates info["subtask_rewards"]
+        # a sparse 0/1 signal; step() also populates info["subtask_rewards"],
+        # info["subtask_reward_increment"], and info["subtask_reward_delta"].
         self.subtask_reward = subtask_reward
         self.subtask_reward_scale = subtask_reward_scale
         self.subtask_confirmation_steps = subtask_confirmation_steps
@@ -222,6 +223,16 @@ class BDDLBaseDomain(SingleArmEnv):
 
         The step() interface (obs, reward, done, info) is unchanged regardless
         of mode; done always reflects full task completion.
+
+        When subtask_reward is True, step() adds shaping diagnostics to info
+        (see step()): per-subtask booleans in ``subtask_rewards``, newly
+        credited weights in ``subtask_reward_increment`` (dict), and their sum
+        in ``subtask_reward_delta`` (float).  We intentionally do *not* use
+        the key ``subtask_reward`` in info, because training stacks often merge
+        env constructor kwargs (e.g. ``subtask_reward=True``) into the info
+        dict under the same name, which would shadow a dict payload and break
+        aggregators that branch on ``if "subtask_reward" in info`` before
+        falling back to ``subtask_info``.
         """
         if self.subtask_reward:
             satisfied = self._evaluate_subtask_rewards()
@@ -310,7 +321,8 @@ class BDDLBaseDomain(SingleArmEnv):
                     if self._subtask_candidate_valid(s["predicate_name"], s["predicate_fn"], args):
                         if s["predicate_name"] in {"on", "in"}:
                             confirmation_counts[name] = confirmation_counts.get(name, 0) + 1
-                            confirm_steps = s.get("confirm_steps") or self.subtask_confirmation_steps
+                            confirm_steps = s.get(
+                                "confirm_steps") or self.subtask_confirmation_steps
                             is_confirmed = confirmation_counts[name] >= confirm_steps
                         else:
                             confirmation_counts[name] = 0
@@ -343,8 +355,9 @@ class BDDLBaseDomain(SingleArmEnv):
                     continue
                 args = [self.object_states_dict[a] for a in pred[1:]]
                 pred_name = pred[0].lower()
-                if self._subtask_candidate_valid(pred_name, lambda *call_args: eval_predicate_fn(
-                        pred_name, *call_args), args):
+                if self._subtask_candidate_valid(
+                        pred_name, lambda *call_args: eval_predicate_fn(pred_name, *call_args),
+                        args):
                     if pred_name in {"on", "in"}:
                         confirmation_counts[key] = confirmation_counts.get(key, 0) + 1
                         is_confirmed = confirmation_counts[key] >= self.subtask_confirmation_steps
@@ -865,7 +878,10 @@ class BDDLBaseDomain(SingleArmEnv):
                 weight = self.subtask_reward_scale / n_total
                 for name in newly:
                     incremental[name] = weight
-            info["subtask_reward"] = incremental
+            # Use names that cannot collide with merged env kwargs (e.g.
+            # subtask_reward=True) — see reward() docstring.
+            info["subtask_reward_increment"] = incremental
+            info["subtask_reward_delta"] = float(sum(incremental.values()))
 
         if self.track_subtask_info:
             # Eval-mode diagnostic: evaluate subtask completion without shaping
