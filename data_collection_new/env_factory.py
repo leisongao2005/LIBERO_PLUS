@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Tuple
+from typing import Any, List, Optional, Tuple, Union
 
 
 def resolve_task(
@@ -34,6 +34,7 @@ def build_libero_env(
     ignore_done: bool = False,
     reward_shaping: bool = False,
     controller: str = "OSC_POSE",
+    camera_names: Optional[Union[str, List[str], Tuple[str, ...]]] = None,
 ):
     import libero.libero.envs.bddl_utils as BDDLUtils
     from libero.libero.envs import TASK_MAPPING
@@ -57,6 +58,9 @@ def build_libero_env(
         "ignore_done": ignore_done,
         "reward_shaping": reward_shaping,
     }
+
+    if camera_names is not None:
+        kwargs["camera_names"] = camera_names
 
     if "TwoArm" in problem_name:
         kwargs["env_configuration"] = env_configuration
