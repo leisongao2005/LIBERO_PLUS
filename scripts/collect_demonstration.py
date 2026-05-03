@@ -19,7 +19,13 @@ from libero.libero.envs import *
 
 
 def collect_human_trajectory(
-    env, device, arm, env_configuration, problem_info, remove_directory=[]
+    env,
+    device,
+    arm,
+    env_configuration,
+    problem_info,
+    remove_directory=[],
+    loop_delay_s=0.0,
 ):
     """
     Use the device (keyboard or SpaceNav 3D mouse) to collect a demonstration.
@@ -78,7 +84,17 @@ def collect_human_trajectory(
 
         # Run environment step
 
-        env.step(action)
+        obs, reward, done, info = env.step(action)
+        # If subtask_reward=True was passed when creating the env:
+        # print(info)
+        # subtask_done = info.get("subtask_rewards")           # dict[str, bool] — cumulative this episode
+        # increment_this_step = info.get("subtask_reward_increment")  # dict[str, float]
+        # delta_this_step = info.get("subtask_reward_delta")   # float
+        # # If track_subtask_info=True (can be True without subtask_reward):
+        # dry_run_flags = info.get("subtask_info") 
+        
+
+        # exit(0)
         env.render()
         # Also break if we complete the task
         if task_completion_hold_count == 0:
@@ -92,6 +108,9 @@ def collect_human_trajectory(
                 task_completion_hold_count = 10  # reset count on first success timestep
         else:
             task_completion_hold_count = -1  # null the counter if there's no success
+
+        if loop_delay_s > 0:
+            time.sleep(loop_delay_s)
 
     print(count)
     # cleanup for end of data collection episodes
@@ -205,7 +224,7 @@ if __name__ == "__main__":
         "--robots",
         nargs="+",
         type=str,
-        default="Panda",
+        default=["Panda"],
         help="Which robot(s) to use in the env",
     )
     parser.add_argument(
@@ -242,7 +261,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--rot-sensitivity",
         type=float,
-        default=1.0,
+        default=3.0,
         help="How much to scale rotation user inputs",
     )
     parser.add_argument(
@@ -252,6 +271,16 @@ if __name__ == "__main__":
         help="How much to scale rotation user inputs",
     )
     parser.add_argument("--bddl-file", type=str)
+    parser.add_argument(
+        "--loop-delay",
+        type=float,
+        default=0.05,
+        help=(
+            "Seconds to sleep after each env.step in the teleop loop. "
+            "Caps wall-clock rate (sim still advances one control step per iteration); "
+            "use e.g. 0.05 to target ~20Hz real time when hardware allows."
+        ),
+    )
 
     parser.add_argument("--vendor-id", type=int, default=9583)
     parser.add_argument("--product-id", type=int, default=50734)
@@ -288,6 +317,8 @@ if __name__ == "__main__":
         use_camera_obs=False,
         reward_shaping=True,
         control_freq=20,
+        subtask_reward=True,
+        track_subtask_info=True,
     )
 
     # Wrap this with visualization wrapper
@@ -312,9 +343,10 @@ if __name__ == "__main__":
         device = Keyboard(
             pos_sensitivity=args.pos_sensitivity, rot_sensitivity=args.rot_sensitivity
         )
-        env.viewer.add_keypress_callback("any", device.on_press)
-        env.viewer.add_keyup_callback("any", device.on_release)
-        env.viewer.add_keyrepeat_callback("any", device.on_press)
+        # env.viewer.add_keypress_callback("any", device.on_press)
+        # env.viewer.add_keyup_callback("any", device.on_release)
+        # env.viewer.add_keyrepeat_callback("any", device.on_press)
+        env.viewer.add_keypress_callback(device.on_press)
     elif args.device == "spacemouse":
         from robosuite.devices import SpaceMouse
 
@@ -346,7 +378,13 @@ if __name__ == "__main__":
     while i < args.num_demonstration:
         print(i)
         saving = collect_human_trajectory(
-            env, device, args.arm, args.config, problem_info, remove_directory
+            env,
+            device,
+            args.arm,
+            args.config,
+            problem_info,
+            remove_directory,
+            loop_delay_s=args.loop_delay,
         )
         if saving:
             print(remove_directory)

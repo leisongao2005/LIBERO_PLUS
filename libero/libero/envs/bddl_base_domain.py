@@ -19,7 +19,11 @@ from libero.libero.envs.object_states import *
 from libero.libero.envs.objects import *
 from libero.libero.envs.regions import *
 from libero.libero.envs.arenas import *
-from libero.libero.envs.predicates import eval_predicate_fn
+from libero.libero.envs.predicates import (
+    PARAMETRIC_PREDICATE_CLS,
+    eval_predicate_fn,
+    instantiate_predicate,
+)
 
 import time
 
@@ -259,6 +263,54 @@ class BDDLBaseDomain(SingleArmEnv):
     # Goal / subtask evaluation
     # ------------------------------------------------------------------
 
+    def _eval_goal_predicate_state(self, state):
+        """Evaluate one (:goal ...) conjunct: unary/binary or parametric (Near, NearEEF, …)."""
+        if not state:
+            return True
+        head = str(state[0]).lower()
+        tail = list(state[1:])
+        obj_args = []
+        num_params = []
+        for tok in tail:
+            try:
+                num_params.append(float(tok))
+            except (ValueError, TypeError):
+                obj_args.append(tok)
+        if head in PARAMETRIC_PREDICATE_CLS:
+            pred_fn = instantiate_predicate(head, num_params)
+            object_states = [self.object_states_dict[a] for a in obj_args]
+            if len(object_states) == 1:
+                return bool(pred_fn(object_states[0]))
+            if len(object_states) == 2:
+                return bool(pred_fn(object_states[0], object_states[1]))
+            raise ValueError(
+                f"Predicate {head!r} expects 1 or 2 object arguments, got {len(object_states)} "
+                f"in {state!r}"
+            )
+        args = [self.object_states_dict[a] for a in tail]
+        return bool(eval_predicate_fn(head, *args))
+
+    def _first_obj_state_from_goal_tokens(self, pred):
+        """First object-state token in a goal atom (skips numeric parameters)."""
+        for tok in pred[1:]:
+            try:
+                float(tok)
+            except (ValueError, TypeError):
+                return self.object_states_dict[tok]
+        return None
+
+    def _subtask_candidate_valid_for_goal_atom(self, pred):
+        """Like _subtask_candidate_valid but for raw goal ``pred`` lists (incl. parametric)."""
+        pred_name = str(pred[0]).lower()
+        if not self._eval_goal_predicate_state(pred):
+            return False
+        if pred_name in {"on", "in", "open", "close", "turnon", "turnoff"}:
+            first = self._first_obj_state_from_goal_tokens(pred)
+            if first is None:
+                return False
+            return self._robot_not_in_contact(first)
+        return True
+
     def _check_goal_state_satisfied(self, goal_state):
         """Return True iff every predicate in goal_state is satisfied.
 
@@ -266,9 +318,7 @@ class BDDLBaseDomain(SingleArmEnv):
         e.g. [['turnon', 'flat_stove_1'], ['on', 'moka_pot_1', 'flat_stove_1_cook_region']].
         """
         for pred in goal_state:
-            pred_fn_name = pred[0]
-            args = [self.object_states_dict[arg] for arg in pred[1:]]
-            if not eval_predicate_fn(pred_fn_name, *args):
+            if not self._eval_goal_predicate_state(pred):
                 return False
         return True
 
@@ -349,15 +399,12 @@ class BDDLBaseDomain(SingleArmEnv):
             goal_state = self.parsed_problem["goal_state"]
             results = {}
             for pred in goal_state:
-                key = "_".join(pred)
+                key = "_".join(str(x) for x in pred)
                 if key in self._subtask_ever_satisfied:
                     results[key] = True
                     continue
-                args = [self.object_states_dict[a] for a in pred[1:]]
-                pred_name = pred[0].lower()
-                if self._subtask_candidate_valid(
-                        pred_name, lambda *call_args: eval_predicate_fn(pred_name, *call_args),
-                        args):
+                pred_name = str(pred[0]).lower()
+                if self._subtask_candidate_valid_for_goal_atom(pred):
                     if pred_name in {"on", "in"}:
                         confirmation_counts[key] = confirmation_counts.get(key, 0) + 1
                         is_confirmed = confirmation_counts[key] >= self.subtask_confirmation_steps

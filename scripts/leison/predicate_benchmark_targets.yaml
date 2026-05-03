@@ -1,0 +1,78 @@
+# Edit this file to choose which benchmark BDDL files are generated.
+# - Set enabled: false to skip a row without deleting it.
+# - After `generate`, you can delete or move .bddl files under
+#   libero/libero/bddl_files/predicate_benchmark_temp/ to narrow what `run` times.
+#
+# Fields:
+#   id: stable filename stem (alphanumeric and underscores).
+#   source_task: BDDL stem under suite/ (no .bddl).
+#   match_predicate: optional; first goal atom from the source task whose head matches (case-insensitive).
+#     Always quote names that are YAML 1.1 booleans: "on", "off", "yes", "no", "true", "false".
+#   goal_s_expr: optional raw goal atom, e.g. "(Grasp white_yellow_mug_1)" or "(NearEEF white_yellow_mug_1 0.15)".
+#     If set, match_predicate is ignored. One of match_predicate or goal_s_expr is required.
+#
+# Newer predicates (see libero/libero/envs/predicates/base_predicates.py): NearEEF, Near,
+# LocalizedNearEEF (parametric), Grasp, DefaultGraspPredicate, HorizontalGraspPredicate, ExactIn, …
+
+suite: libero_10
+
+targets:
+  - id: in_kitchen_scene6
+    enabled: true
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    match_predicate: in
+
+  - id: close_kitchen_scene6
+    enabled: true
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    match_predicate: close
+
+  - id: on_kitchen_scene8
+    enabled: true
+    source_task: KITCHEN_SCENE8_put_both_moka_pots_on_the_stove
+    match_predicate: "on"
+
+  - id: turnon_kitchen_scene8
+    enabled: true
+    source_task: KITCHEN_SCENE8_put_both_moka_pots_on_the_stove
+    match_predicate: turnon
+
+  - id: grasp_kitchen_scene6
+    enabled: true
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    goal_s_expr: "(Grasp white_yellow_mug_1)"
+
+  - id: default_grasp_kitchen_scene6
+    enabled: true
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    goal_s_expr: "(DefaultGraspPredicate white_yellow_mug_1)"
+
+  - id: horizontal_grasp_kitchen_scene6
+    enabled: true
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    goal_s_expr: "(HorizontalGraspPredicate white_yellow_mug_1)"
+
+  - id: localized_neareef_kitchen_scene6
+    enabled: true
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    goal_s_expr: "(LocalizedNearEEF white_yellow_mug_1)"
+
+  - id: localized_neareef_tight_kitchen_scene6
+    enabled: false
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    goal_s_expr: "(LocalizedNearEEF white_yellow_mug_1 0.08 0.15)"
+
+  - id: neareef_kitchen_scene6
+    enabled: true
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    goal_s_expr: "(NearEEF white_yellow_mug_1 0.15)"
+
+  - id: near_mugs_kitchen_scene6
+    enabled: true
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    goal_s_expr: "(Near white_yellow_mug_1 porcelain_mug_1 0.12)"
+
+  - id: exactin_kitchen_scene6
+    enabled: true
+    source_task: KITCHEN_SCENE6_put_the_yellow_and_white_mug_in_the_microwave_and_close_it
+    goal_s_expr: "(ExactIn white_yellow_mug_1 microwave_1_heating_region)"

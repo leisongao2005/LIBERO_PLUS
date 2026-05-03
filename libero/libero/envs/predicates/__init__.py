@@ -16,6 +16,9 @@ VALIDATE_PREDICATE_FN_DICT = {
     "turnon": TurnOn(),
     "turnoff": TurnOff(),
     "grasp": Grasp(),
+    "exactin": ExactIn(),
+    "defaultgrasppredicate": DefaultGraspPredicate(),
+    "horizontalgrasppredicate": HorizontalGraspPredicate(),
 }
 
 # Predicates that require numeric parameters and must be instantiated at parse time.
@@ -23,6 +26,7 @@ VALIDATE_PREDICATE_FN_DICT = {
 PARAMETRIC_PREDICATE_CLS = {
     "neareef": NearEEF,
     "near": Near,
+    "localizedneareef": LocalizedNearEEF,
 }
 
 
@@ -31,8 +35,9 @@ def update_predicate_fn_dict(fn_key, fn_name):
 
 
 def eval_predicate_fn(predicate_fn_name, *args):
-    assert predicate_fn_name in VALIDATE_PREDICATE_FN_DICT
-    return VALIDATE_PREDICATE_FN_DICT[predicate_fn_name](*args)
+    key = str(predicate_fn_name).lower()
+    assert key in VALIDATE_PREDICATE_FN_DICT
+    return VALIDATE_PREDICATE_FN_DICT[key](*args)
 
 
 def get_predicate_fn_dict():
@@ -50,4 +55,14 @@ def instantiate_predicate(predicate_name: str, numeric_params: list):
         f"Unknown parametric predicate '{name}'. "
         f"Available: {list(PARAMETRIC_PREDICATE_CLS.keys())}"
     )
-    return PARAMETRIC_PREDICATE_CLS[name](*numeric_params)
+    cls = PARAMETRIC_PREDICATE_CLS[name]
+    if name == "localizedneareef":
+        if len(numeric_params) == 0:
+            return cls()
+        if len(numeric_params) == 1:
+            return cls(dist_threshold=float(numeric_params[0]))
+        return cls(
+            dist_threshold=float(numeric_params[0]),
+            vel_threshold=float(numeric_params[1]),
+        )
+    return cls(*numeric_params)

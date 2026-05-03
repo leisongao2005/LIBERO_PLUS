@@ -18,5 +18,5 @@ libero.egg-info/
 .vscode/
 
 notebooks/tmp
-scripts/leison
 tmp/
+libero/libero/bddl_files/predicate_benchmark_temp/
