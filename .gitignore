@@ -20,3 +20,4 @@ libero.egg-info/
 notebooks/tmp
 tmp/
 libero/libero/bddl_files/predicate_benchmark_temp/
+.cursor/
