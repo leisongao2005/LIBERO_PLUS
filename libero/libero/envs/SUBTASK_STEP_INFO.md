@@ -1,5 +1,7 @@
 # Subtask-related `info` fields from `BDDLBaseDomain.step()`
 
+> **Note:** For the in-flight hierarchical sim-wrapper refactor, authoritative behavior is `.cursor/plans/hierarchical_sim_wrapper_refactor_599aa945.plan.md`; this file remains **legacy** documentation for the current monolithic `info` contract.
+
 For the end-to-end subtask pipeline (BDDL parsing, evaluation order, reset, and `step` / `reward` ordering), see [SUBTASK_CONTROL_FLOW.md](./SUBTASK_CONTROL_FLOW.md).
 
 This document describes the **exact auxiliary data** LIBERO’s `BDDLBaseDomain` adds to the `info` dict returned by `step()`. It applies to environments built from `TASK_MAPPING` problem classes (e.g. `Libero_*_Manipulation`) wrapped by `ControlEnv` / `OffScreenRenderEnv`, which forward `step()` to the underlying robosuite env.
