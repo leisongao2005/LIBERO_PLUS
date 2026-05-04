@@ -1,0 +1,19 @@
+---
+description: LIBERO_PLUS BDDL scope — only train/eval subtask suites under bddl_files
+alwaysApply: true
+---
+
+# LIBERO_PLUS BDDL scope
+
+For **LIBERO_PLUS** hierarchical sim, wrapper, predicate, and subtask work, treat **only** these directories as in-scope for BDDL definitions and task bundles:
+
+- `libero/libero/bddl_files/libero_plus_train_subtasks/`
+- `libero/libero/bddl_files/libero_plus_eval_subtasks/`
+
+All other suites under `libero/libero/bddl_files/` (for example legacy LIBERO task families) are **out of scope** unless the user explicitly expands the request.
+
+## Agent behavior
+
+- Prefer reading, editing, and citing BDDL from the two folders above when the task concerns LIBERO_PLUS train/eval subtasks.
+- Do not assume changes to other BDDL trees are required for LIBERO_PLUS refactors unless the user says otherwise.
+- When adding tests, smoke tasks, or documentation examples for LIBERO_PLUS, pick problems from `libero_plus_train_subtasks` or `libero_plus_eval_subtasks` by default.
