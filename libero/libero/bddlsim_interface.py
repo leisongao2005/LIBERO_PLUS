@@ -255,12 +255,21 @@ def infer_space_for_value(value: object) -> spaces.Space:
     return spaces.Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float32)
 
 
+from libero.libero import hierarchical_reward_wrapper as _hierarchical_reward_wrapper
+
+HierarchicalRewardWrapper = _hierarchical_reward_wrapper.HierarchicalRewardWrapper
+LevelName = _hierarchical_reward_wrapper.LevelName
+RewardConfig = _hierarchical_reward_wrapper.RewardConfig
+
 __all__ = [
     "BDDLSimStepInfo",
     "EXAMPLE_SIM_STEP_INFO",
     "FakeBDDLEnv",
+    "HierarchicalRewardWrapper",
     "InstructionStrSpace",
+    "LevelName",
     "RAW_PREDICATE_KEY_L4",
+    "RewardConfig",
     "empty_raw_predicates",
     "infer_space_for_value",
     "make_empty_sim_step_info",
