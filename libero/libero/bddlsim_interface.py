@@ -14,8 +14,11 @@ must emit exactly this shape every step, with no feature flags.
 | Key | Type | Semantics |
 |-----|------|-----------|
 | `raw_predicates` | `dict[str, bool]` | Instantaneous predicate truth. **No** one-shot latch inside sim. |
-| `subtask_history` | `dict[str, bool]` | L3 one-shot bitmask for the episode: keys are **L3 subtask names** in BDDL declaration order; values flip to `True` the first time that L3 predicate is credited (sim implementation detail) and stay `True`. |
 | `l4_satisfied` | `bool` | Full `(:goal ...)` satisfaction on this physics step (before any wrapper latch). |
+
+`subtask_history` (the L3 one-shot bitmask) is **not** emitted by the sim. The sim is
+fully stateless — it holds no per-episode history. The wrapper maintains `_l3_history`
+and exposes `subtask_history` in its own output `info` for downstream consumers.
 
 ## `raw_predicates` key naming (locked)
 
@@ -58,10 +61,13 @@ from gym import spaces
 
 
 class BDDLSimStepInfo(TypedDict):
-    """Mandatory keys on every real (or fake) BDDL sim `step` / `info`."""
+    """Mandatory keys on every real (or fake) BDDL sim `step` / `info`.
+
+    The sim is fully stateless — `subtask_history` is not emitted here.
+    The wrapper computes and owns the L3 one-shot bitmask (see DESIGN.md §1).
+    """
 
     raw_predicates: Dict[str, bool]
-    subtask_history: Dict[str, bool]
     l4_satisfied: bool
 
 
@@ -92,11 +98,9 @@ def empty_raw_predicates(subtask_names_ordered: Sequence[str]) -> Dict[str, bool
 
 
 def make_empty_sim_step_info(subtask_names_ordered: Sequence[str]) -> BDDLSimStepInfo:
-    """Default episode-initial info: no L3 progress, no L4, all raw flags false."""
-    history = {name: False for name in subtask_names_ordered}
+    """Default episode-initial info: no L4, all raw flags false."""
     return BDDLSimStepInfo(
         raw_predicates=empty_raw_predicates(subtask_names_ordered),
-        subtask_history=history,
         l4_satisfied=False,
     )
 
@@ -111,7 +115,6 @@ EXAMPLE_SIM_STEP_INFO: BDDLSimStepInfo = BDDLSimStepInfo(
         "L3::open_door": False,
         RAW_PREDICATE_KEY_L4: False,
     },
-    subtask_history={"stove_on": True, "open_door": False},
     l4_satisfied=False,
 )
 
@@ -123,29 +126,19 @@ def validate_sim_step_info(
     strict_raw_keys: bool = True,
 ) -> None:
     """Raise `ValueError` if `info` does not satisfy the Phase 0 contract."""
-    missing = [k for k in ("raw_predicates", "subtask_history", "l4_satisfied") if k not in info]
+    missing = [k for k in ("raw_predicates", "l4_satisfied") if k not in info]
     if missing:
         raise ValueError(f"info missing keys {missing}")
 
     raw = info["raw_predicates"]
-    hist = info["subtask_history"]
     l4_flag = info["l4_satisfied"]
 
     if not isinstance(raw, Mapping):
         raise ValueError("raw_predicates must be a dict-like mapping")
-    if not isinstance(hist, Mapping):
-        raise ValueError("subtask_history must be a dict-like mapping")
     if not isinstance(l4_flag, bool):
         raise ValueError("l4_satisfied must be bool")
 
     raw = cast(Mapping[str, bool], raw)
-    hist = cast(Mapping[str, bool], hist)
-
-    if list(hist.keys()) != list(subtask_names_ordered):
-        raise ValueError(
-            "subtask_history keys must exactly match subtask_names_ordered "
-            f"(got {list(hist.keys())!r}, want {list(subtask_names_ordered)!r})"
-        )
 
     if RAW_PREDICATE_KEY_L4 not in raw:
         raise ValueError(f'raw_predicates must contain "{RAW_PREDICATE_KEY_L4}"')
@@ -164,9 +157,6 @@ def validate_sim_step_info(
     for k, v in raw.items():
         if not isinstance(v, bool):
             raise ValueError(f"raw_predicates[{k!r}] must be bool, got {type(v)}")
-    for k, v in hist.items():
-        if not isinstance(v, bool):
-            raise ValueError(f"subtask_history[{k!r}] must be bool, got {type(v)}")
 
 
 class InstructionStrSpace(spaces.Space):

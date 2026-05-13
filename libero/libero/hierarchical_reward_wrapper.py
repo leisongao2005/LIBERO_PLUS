@@ -81,9 +81,10 @@ class HierarchicalRewardWrapper(gym.Wrapper):
     instruction_key
         Observation key whose string value will receive the privileged status suffix (Track D).
     subtask_names_ordered
-        If set, ``subtask_history`` key order is validated against this sequence every step.
-        If omitted, subtask order is taken from the first post-``reset`` ``step``'s
-        ``info["subtask_history"]`` keys (Python dict insertion order).
+        If set, ``raw_predicates`` key set is validated against this sequence every step.
+        If omitted, subtask order is inferred from the first post-``reset`` ``step``'s
+        ``raw_predicates`` ``L3::*`` keys (Python dict insertion order, i.e. BDDL
+        declaration order). Passing this explicitly is recommended for production use.
     """
 
     def __init__(
@@ -100,9 +101,11 @@ class HierarchicalRewardWrapper(gym.Wrapper):
             tuple(subtask_names_ordered) if subtask_names_ordered is not None else None
         )
         self._resolved_subtask_names: Optional[Tuple[str, ...]] = self._explicit_subtask_names
-        # Populated each episode; Track C will use these for transient L1/L2 deltas.
+        # Per-episode state; Track C wires these into delta detection and reward shaping.
         self._l1_prev: Dict[str, bool] = {}
         self._l2_prev: Dict[str, bool] = {}
+        # L3 one-shot bitmask — wrapper-owned (sim is stateless; see DESIGN.md §1).
+        self._l3_history: Dict[str, bool] = {}
 
     def reset(self, **kwargs):  # type: ignore[override]
         self._clear_episode_state()
@@ -120,6 +123,7 @@ class HierarchicalRewardWrapper(gym.Wrapper):
             self._resolved_subtask_names = self._explicit_subtask_names
         self._l1_prev.clear()
         self._l2_prev.clear()
+        self._l3_history.clear()
 
     def _passthrough_sim_info(self, info: Mapping[str, object]) -> Dict[str, object]:
         if not isinstance(info, MutableMapping):
@@ -129,13 +133,17 @@ class HierarchicalRewardWrapper(gym.Wrapper):
             info = {k: info[k] for k in info}
 
         if self._resolved_subtask_names is None:
-            hist = info.get("subtask_history")
-            if not isinstance(hist, Mapping):
+            raw = info.get("raw_predicates")
+            if not isinstance(raw, Mapping):
                 raise ValueError(
-                    'info["subtask_history"] must be present and mapping-like on every step '
+                    'info["raw_predicates"] must be present and mapping-like on every step '
                     "when subtask_names_ordered was not passed to the wrapper."
                 )
-            self._resolved_subtask_names = tuple(hist.keys())
+            # Infer subtask names from L3::* keys in BDDL declaration order.
+            l3_prefix = "L3::"
+            self._resolved_subtask_names = tuple(
+                k[len(l3_prefix):] for k in raw if k.startswith(l3_prefix)
+            )
 
         validate_sim_step_info(
             info,
