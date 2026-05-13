@@ -2,7 +2,6 @@ import numpy as np
 import os
 import robosuite.utils.transform_utils as T
 
-from copy import deepcopy
 from robosuite.environments.manipulation.single_arm_env import SingleArmEnv
 from robosuite.models.tasks import ManipulationTask
 from robosuite.utils.placement_samplers import SequentialCompositeSampler
@@ -21,8 +20,15 @@ from libero.libero.envs.regions import *
 from libero.libero.envs.arenas import *
 from libero.libero.envs.predicates import (
     PARAMETRIC_PREDICATE_CLS,
+    DefaultGraspPredicate,
     eval_predicate_fn,
     instantiate_predicate,
+)
+from libero.libero.bddlsim_interface import (
+    RAW_PREDICATE_KEY_L4,
+    raw_predicate_key_l1,
+    raw_predicate_key_l2,
+    raw_predicate_key_l3,
 )
 
 import time
@@ -53,10 +59,6 @@ class BDDLBaseDomain(SingleArmEnv):
         use_object_obs=True,
         reward_scale=1.0,
         reward_shaping=False,
-        subtask_reward=False,
-        subtask_reward_scale=0.5,
-        subtask_confirmation_steps=10,
-        track_subtask_info=False,
         placement_initializer=None,
         object_property_initializers=None,
         has_renderer=False,
@@ -88,25 +90,6 @@ class BDDLBaseDomain(SingleArmEnv):
         # reward configuration
         self.reward_scale = reward_scale
         self.reward_shaping = reward_shaping
-        # when True, reward() returns a fractional subtask reward instead of
-        # a sparse 0/1 signal; step() also populates info["subtask_rewards"],
-        # info["subtask_reward_increment"], and info["subtask_reward_delta"].
-        self.subtask_reward = subtask_reward
-        self.subtask_reward_scale = subtask_reward_scale
-        self.subtask_confirmation_steps = subtask_confirmation_steps
-        # when True, info["subtask_info"] is populated every step regardless of
-        # subtask_reward, using dry_run=True so one-shot tracking is unaffected.
-        # Useful for eval-time diagnostics without shaping the reward signal.
-        self.track_subtask_info = track_subtask_info
-        # Caches _evaluate_subtask_rewards() result produced inside reward() so
-        # step() can copy it into info without a second physics evaluation.
-        self._subtask_satisfied_cache: dict = {}
-        # Tracks which subtask names have been satisfied at any point in the
-        # current episode.  Once a subtask enters this set it stays credited
-        # (one-shot reward), preventing reward cycling.  Cleared on reset().
-        self._subtask_ever_satisfied: set = set()
-        # Tracks pending confirmations for delayed On / In subtasks.
-        self._subtask_confirmation_counts: dict = {}
 
         self.use_object_obs = use_object_obs
 
@@ -137,8 +120,6 @@ class BDDLBaseDomain(SingleArmEnv):
 
         self.bddl_file_name = bddl_file_name
         self.parsed_problem = BDDLUtils.robosuite_parse_problem(self.bddl_file_name)
-        # Normalize once so per-step reward() has no extra division cost.
-        self._normalize_subtask_weights()
 
         self.obj_of_interest = self.parsed_problem["obj_of_interest"]
 
@@ -182,79 +163,13 @@ class BDDLBaseDomain(SingleArmEnv):
     # Reward
     # ------------------------------------------------------------------
 
-    def _normalize_subtask_weights(self):
-        """Normalize subtask reward weights to sum to subtask_reward_scale.
-
-        Called once during __init__ after parsing, so per-step reward()
-        just sums pre-scaled floats with no extra division.
-
-        BDDL weights are treated as *relative* — any positive values work.
-        Example: weights [1, 1] -> [0.25, 0.25] when subtask_reward_scale=0.5.
-        Example: weights [2, 1] -> [0.333, 0.167] when subtask_reward_scale=0.5.
-        """
-        fine = self.parsed_problem.get("subtask_rewards", [])
-        if not fine:
-            return
-        total = sum(s["reward"] for s in fine)
-        if total <= 0:
-            return
-        scale = self.subtask_reward_scale / total
-        for s in fine:
-            s["reward"] = s["reward"] * scale
-
     def reward(self, action=None):
-        """Return the task reward.
+        """Return sparse task reward: 1.0 on full goal satisfaction, else 0.0.
 
-        Sparse mode (default, subtask_reward=False):
-            Range [0, 1].  Returns 1.0 when all goal predicates are satisfied,
-            else 0.0.
-
-        Subtask mode (subtask_reward=True):
-            Range [0, 1 + subtask_reward_scale].  Two components:
-
-            * Subtask progress  — up to subtask_reward_scale (default 0.5).
-              If the BDDL file has a (:subtask_rewards ...) section, the
-              declared weights are used (normalized to subtask_reward_scale
-              at init time — see _normalize_subtask_weights).  Without that
-              section each goal predicate contributes subtask_reward_scale/N
-              equally.
-
-            * Task completion   — 1.0 added when all goal predicates are
-              simultaneously satisfied (same condition as done=True).
-
-            The subtask_reward_scale / 1.0 split keeps the terminal signal
-            dominant. reward_scale is applied to the combined value.
-
-        The step() interface (obs, reward, done, info) is unchanged regardless
-        of mode; done always reflects full task completion.
-
-        When subtask_reward is True, step() adds shaping diagnostics to info
-        (see step()): per-subtask booleans in ``subtask_rewards``, newly
-        credited weights in ``subtask_reward_increment`` (dict), and their sum
-        in ``subtask_reward_delta`` (float).  We intentionally do *not* use
-        the key ``subtask_reward`` in info, because training stacks often merge
-        env constructor kwargs (e.g. ``subtask_reward=True``) into the info
-        dict under the same name, which would shadow a dict payload and break
-        aggregators that branch on ``if "subtask_reward" in info`` before
-        falling back to ``subtask_info``.
+        All reward shaping lives in the HierarchicalRewardWrapper layer.
+        reward_scale is applied to the raw 0/1 value.
         """
-        if self.subtask_reward:
-            satisfied = self._evaluate_subtask_rewards()
-            # Cache so step() can populate info without a second evaluation.
-            self._subtask_satisfied_cache = satisfied
-            fine = self.parsed_problem.get("subtask_rewards", [])
-            if fine:
-                # Weights are already normalized to subtask_reward_scale.
-                r = sum(s["reward"] for s in fine if satisfied.get(s["name"], False))
-            else:
-                # Coarse fallback: equal share of subtask_reward_scale per predicate.
-                n = max(len(satisfied), 1)
-                r = self.subtask_reward_scale * sum(1.0 for v in satisfied.values() if v) / n
-            if self._check_success():
-                r += 1.0
-        else:
-            r = 1.0 if self._check_success() else 0.0
-
+        r = 1.0 if self._check_success() else 0.0
         if self.reward_scale is not None:
             r *= self.reward_scale
         return r
@@ -299,18 +214,6 @@ class BDDLBaseDomain(SingleArmEnv):
                 return self.object_states_dict[tok]
         return None
 
-    def _subtask_candidate_valid_for_goal_atom(self, pred):
-        """Like _subtask_candidate_valid but for raw goal ``pred`` lists (incl. parametric)."""
-        pred_name = str(pred[0]).lower()
-        if not self._eval_goal_predicate_state(pred):
-            return False
-        if pred_name in {"on", "in", "open", "close", "turnon", "turnoff"}:
-            first = self._first_obj_state_from_goal_tokens(pred)
-            if first is None:
-                return False
-            return self._robot_not_in_contact(first)
-        return True
-
     def _check_goal_state_satisfied(self, goal_state):
         """Return True iff every predicate in goal_state is satisfied.
 
@@ -322,133 +225,109 @@ class BDDLBaseDomain(SingleArmEnv):
                 return False
         return True
 
-    def _evaluate_subtask_rewards(self, dry_run: bool = False):
-        """Evaluate subtask predicates and return per-subtask satisfaction status.
+    # ------------------------------------------------------------------
+    # Raw-predicate emission (Phase 0 contract)
+    # ------------------------------------------------------------------
 
-        Returns a dict mapping subtask name (or predicate key) to bool.
+    # Predicates for which L2 (grasp) is meaningful: pick-and-place only.
+    # For articulation predicates (turnon, turnoff, open, close) the robot
+    # actuates a joint rather than grasping and carrying an object, so L2 is
+    # always False (see DESIGN.md §4 "L2 grasp scope").
+    _PICK_PLACE_PREDICATES: frozenset = frozenset({"on", "in"})
 
-        One-shot semantics: once a subtask is satisfied it stays True for the
-        rest of the episode (_subtask_ever_satisfied), even if the predicate
-        later becomes False again.  This prevents the agent from cycling a
-        subtask condition to farm reward.  The set is cleared on reset().
+    def _l2_grasp_predicate_for_primary_object_name(self, object_name: str):
+        """Return a callable(ObjectState) -> bool for the L2 grasp check.
 
-        Fine-grained mode (BDDL has a :subtask_rewards section):
-            Evaluates in declaration order.  A subtask whose :after
-            prerequisites have *never* been satisfied returns False without
-            evaluating its predicate (hard prerequisite gate).  Prerequisites
-            use the ever-satisfied set so unlocking persists even if the
-            prerequisite predicate later becomes False.
-
-        Coarse fallback (no :subtask_rewards section):
-            Each predicate in (:goal ...) is an independent subtask with equal
-            reward weight.  No ordering is enforced.
-
-        Args:
-            dry_run: When True, evaluate predicates but do NOT update
-                _subtask_ever_satisfied.  Use this for inspection and testing
-                to avoid inadvertently crediting a subtask.
+        Uses DefaultGraspPredicate: gripper contacts the object and no other
+        external geom is touching it (table, shelf, arm links outside the
+        important_geoms set).
         """
+        pred = DefaultGraspPredicate(robot_idx=0)
+        return pred
+
+    def _l1_near_predicate(self):
+        """Return a callable(ObjectState) -> bool for the L1 localization check.
+
+        Uses LocalizedNearEEF (registered as 'localizedneareef') — the same
+        predicate used in BDDL NearEEF subtask evaluation.
+        """
+        return instantiate_predicate("localizedneareef", [])
+
+    def _evaluate_raw_predicates(self) -> dict:
+        """Evaluate and return the instantaneous raw predicate dict for this step.
+
+        Returns a dict with keys (in BDDL declaration order):
+            L1::<subtask_name>  — primary object near EEF (LocalizedNearEEF, transient)
+            L2::<subtask_name>  — gripper grasping primary object (transient);
+                                  always False for non-pick-place predicates
+                                  (turnon/turnoff/open/close) — see DESIGN.md §4
+            L3::<subtask_name>  — BDDL subtask predicate, instantaneous (no latch)
+            L4                  — full (:goal ...) satisfaction (mirrors l4_satisfied)
+
+        Fine-grained path: uses the (:subtask_rewards ...) section when present,
+        which provides named subtasks with explicit predicate specs.
+
+        Coarse fallback: when no (:subtask_rewards ...) section exists, each
+        (:goal ...) conjunct becomes an anonymous subtask keyed by its token join.
+        """
+        raw: dict = {}
+        l1_fn = self._l1_near_predicate()
+
         fine = self.parsed_problem.get("subtask_rewards", [])
-        confirmation_counts = deepcopy(self._subtask_confirmation_counts)
         if fine:
-            satisfied = {}
-            # local_ever tracks intra-call propagation: if subtask A is
-            # satisfied in this call, its dependents can be unlocked in the
-            # same call.  In dry_run mode we intentionally do NOT write back
-            # to self._subtask_ever_satisfied (avoids side-effects), but we
-            # still need local propagation so :after chains resolve correctly.
-            local_ever = set(self._subtask_ever_satisfied)
+            # Fine-grained path: (:subtask_rewards ...) section present.
             for s in fine:
                 name = s["name"]
-                if name in local_ever:
-                    # Already credited this episode — no re-evaluation needed.
-                    satisfied[name] = True
-                    continue
-                # Prerequisites must have been satisfied at some point.
-                prereqs_met = all(p in local_ever for p in s["after"])
-                if prereqs_met:
-                    args = [self.object_states_dict[a] for a in s["predicate_args"]]
-                    if self._subtask_candidate_valid(s["predicate_name"], s["predicate_fn"], args):
-                        if s["predicate_name"] in {"on", "in"}:
-                            confirmation_counts[name] = confirmation_counts.get(name, 0) + 1
-                            confirm_steps = s.get(
-                                "confirm_steps") or self.subtask_confirmation_steps
-                            is_confirmed = confirmation_counts[name] >= confirm_steps
-                        else:
-                            confirmation_counts[name] = 0
-                            is_confirmed = True
+                pred_name = (s.get("predicate_name") or "").lower()
+                args = [self.object_states_dict[a] for a in s["predicate_args"]]
 
-                        if is_confirmed:
-                            if not dry_run:
-                                self._subtask_ever_satisfied.add(name)
-                            local_ever.add(name)
-                            satisfied[name] = True
-                        else:
-                            satisfied[name] = False
-                    else:
-                        confirmation_counts[name] = 0
-                        satisfied[name] = False
+                # Primary object is the first arg (first non-numeric token).
+                primary = args[0] if args else None
+
+                # L1: primary object near EEF (always evaluated when primary exists).
+                raw[raw_predicate_key_l1(name)] = bool(l1_fn(primary)) if primary is not None else False
+
+                # L2: gripper grasping primary object — only meaningful for
+                # pick-and-place predicates (on/in).  Articulation predicates
+                # (turnon, turnoff, open, close) do not involve grasping and
+                # carrying, so L2 is set to False unconditionally for them.
+                if pred_name in self._PICK_PLACE_PREDICATES and primary is not None:
+                    l2_fn = self._l2_grasp_predicate_for_primary_object_name(primary.object_name)
+                    raw[raw_predicate_key_l2(name)] = bool(l2_fn(primary))
                 else:
-                    confirmation_counts[name] = 0
-                    satisfied[name] = False
-            if not dry_run:
-                self._subtask_confirmation_counts = confirmation_counts
-            return satisfied
+                    raw[raw_predicate_key_l2(name)] = False
+
+                # L3: instantaneous predicate — no one-shot latch, no :after gating.
+                l3_val = bool(s["predicate_fn"](*args)) if args else False
+                raw[raw_predicate_key_l3(name)] = l3_val
         else:
-            # Coarse: every goal predicate becomes a subtask with equal weight.
-            goal_state = self.parsed_problem["goal_state"]
-            results = {}
+            # Coarse fallback: treat each (:goal ...) conjunct as an anonymous subtask.
+            goal_state = self.parsed_problem.get("goal_state", [])
             for pred in goal_state:
-                key = "_".join(str(x) for x in pred)
-                if key in self._subtask_ever_satisfied:
-                    results[key] = True
-                    continue
+                name = "_".join(str(x) for x in pred)
                 pred_name = str(pred[0]).lower()
-                if self._subtask_candidate_valid_for_goal_atom(pred):
-                    if pred_name in {"on", "in"}:
-                        confirmation_counts[key] = confirmation_counts.get(key, 0) + 1
-                        is_confirmed = confirmation_counts[key] >= self.subtask_confirmation_steps
-                    else:
-                        confirmation_counts[key] = 0
-                        is_confirmed = True
 
-                    if is_confirmed:
-                        if not dry_run:
-                            self._subtask_ever_satisfied.add(key)
-                        results[key] = True
-                    else:
-                        results[key] = False
+                # Primary object: first non-numeric token after the predicate name.
+                primary = self._first_obj_state_from_goal_tokens(pred)
+
+                # L1: primary object near EEF.
+                raw[raw_predicate_key_l1(name)] = bool(l1_fn(primary)) if primary is not None else False
+
+                # L2: only for on/in predicates; False for articulation predicates.
+                # (turnon, turnoff, open, close do not require grasping the object.)
+                if pred_name in self._PICK_PLACE_PREDICATES and primary is not None:
+                    l2_fn = self._l2_grasp_predicate_for_primary_object_name(primary.object_name)
+                    raw[raw_predicate_key_l2(name)] = bool(l2_fn(primary))
                 else:
-                    confirmation_counts[key] = 0
-                    results[key] = False
-            if not dry_run:
-                self._subtask_confirmation_counts = confirmation_counts
-            return results
+                    raw[raw_predicate_key_l2(name)] = False
 
-    def _resolve_contact_object(self, object_state):
-        """Resolve an ObjectState / SiteObjectState to a real Mujoco object for contact checks."""
-        if getattr(object_state, "object_state_type", None) == "site":
-            return self.get_object(object_state.parent_name)
-        return self.get_object(object_state.object_name)
+                # L3: instantaneous predicate evaluation.
+                l3_val = self._eval_goal_predicate_state(pred)
+                raw[raw_predicate_key_l3(name)] = bool(l3_val)
 
-    def _robot_not_in_contact(self, object_state):
-        """Return True when the robot gripper is no longer touching the relevant object."""
-        robot = self.robots[0]
-        target_object = self._resolve_contact_object(object_state)
-        if target_object is None:
-            return True
-        return not self.check_contact(robot.gripper, target_object)
-
-    def _subtask_candidate_valid(self, predicate_name, predicate_fn, args):
-        """Apply release-aware gating on top of the existing instantaneous predicate."""
-        if not bool(predicate_fn(*args)):
-            return False
-        predicate_name = predicate_name.lower()
-        if predicate_name in {"on", "in"}:
-            return bool(args) and self._robot_not_in_contact(args[0])
-        if predicate_name in {"open", "close", "turnon", "turnoff"}:
-            return bool(args) and self._robot_not_in_contact(args[0])
-        return True
+        # L4: full terminal goal satisfaction — mirrors l4_satisfied in step() info.
+        raw[RAW_PREDICATE_KEY_L4] = bool(self._check_success())
+        return raw
 
     # ------------------------------------------------------------------
     # Abstract arena-loading hooks (implemented by problem subclasses)
@@ -854,10 +733,6 @@ class BDDLBaseDomain(SingleArmEnv):
             })
 
     def _reset_internal(self):
-        # Clear per-episode reward state so each new episode starts fresh.
-        self._subtask_ever_satisfied = set()
-        self._subtask_satisfied_cache = {}
-        self._subtask_confirmation_counts = {}
         super()._reset_internal()
 
         if not self.deterministic_reset:
@@ -900,42 +775,23 @@ class BDDLBaseDomain(SingleArmEnv):
             action = np.array(action)
             action = np.concatenate((action[:3], action[-1:]), axis=-1)
 
-        # Snapshot before step so we can compute newly satisfied (incremental).
-        prev_ever_satisfied = set(self._subtask_ever_satisfied) if self.subtask_reward else set()
-
         obs, reward, done, info = super().step(action)
         done = self._check_success()
 
-        if self.subtask_reward:
-            # reward() already evaluated and cached this during super().step().
-            info["subtask_rewards"] = self._subtask_satisfied_cache
-            # Incremental scalar rewards: only newly satisfied this step (one-shot).
-            newly = self._subtask_ever_satisfied - prev_ever_satisfied
-            incremental = {}
-            fine = self.parsed_problem.get("subtask_rewards", [])
-            if fine:
-                name_to_reward = {s["name"]: s["reward"] for s in fine}
-                for name in newly:
-                    if name in name_to_reward:
-                        incremental[name] = name_to_reward[name]
-            else:
-                # Coarse: equal share of subtask_reward_scale per subtask.
-                goal_state = self.parsed_problem.get("goal_state", [])
-                n_total = max(len(goal_state), 1)
-                weight = self.subtask_reward_scale / n_total
-                for name in newly:
-                    incremental[name] = weight
-            # Use names that cannot collide with merged env kwargs (e.g.
-            # subtask_reward=True) — see reward() docstring.
-            info["subtask_reward_increment"] = incremental
-            info["subtask_reward_delta"] = float(sum(incremental.values()))
+        # Emit the Phase 0 contract keys: instantaneous raw predicate truth and
+        # terminal goal satisfaction.  All shaping lives in the wrapper layer.
+        # Remove any legacy keys that may have been added by super().step().
+        for _legacy_key in (
+            "subtask_rewards",
+            "subtask_reward_increment",
+            "subtask_reward_delta",
+            "subtask_info",
+        ):
+            info.pop(_legacy_key, None)
 
-        if self.track_subtask_info:
-            # Eval-mode diagnostic: evaluate subtask completion without shaping
-            # the reward.  dry_run=True leaves _subtask_ever_satisfied untouched
-            # so the one-shot semantics remain correct when used alongside
-            # subtask_reward=True, or are simply inert when used alone.
-            info["subtask_info"] = self._evaluate_subtask_rewards(dry_run=True)
+        l4 = bool(self._check_success())
+        info["raw_predicates"] = self._evaluate_raw_predicates()
+        info["l4_satisfied"] = l4
 
         return obs, reward, done, info
 
