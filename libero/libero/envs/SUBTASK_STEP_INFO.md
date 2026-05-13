@@ -1,124 +1,152 @@
-# Subtask-related `info` fields from `BDDLBaseDomain.step()`
+# Subtask-Related `info` Fields — Historical Reference
 
-> **Note:** For the in-flight hierarchical sim-wrapper refactor, authoritative behavior is `.cursor/plans/hierarchical_sim_wrapper_refactor_599aa945.plan.md`; this file remains **legacy** documentation for the current monolithic `info` contract.
-
-For the end-to-end subtask pipeline (BDDL parsing, evaluation order, reset, and `step` / `reward` ordering), see [SUBTASK_CONTROL_FLOW.md](./SUBTASK_CONTROL_FLOW.md).
-
-This document describes the **exact auxiliary data** LIBERO’s `BDDLBaseDomain` adds to the `info` dict returned by `step()`. It applies to environments built from `TASK_MAPPING` problem classes (e.g. `Libero_*_Manipulation`) wrapped by `ControlEnv` / `OffScreenRenderEnv`, which forward `step()` to the underlying robosuite env.
-
-## Top-level `step()` return value
-
-Each call returns a **4-tuple**:
-
-| Position | Name   | Type (typical) | Notes |
-|----------|--------|----------------|--------|
-| 0        | `obs`  | `OrderedDict` or structure used by robosuite | Unchanged by subtask logic. |
-| 1        | `reward` | `float` | From `reward()`; includes subtask shaping when `subtask_reward=True` (see `reward()` docstring). |
-| 2        | `done` | `bool` | After `super().step()`, LIBERO sets `done = self._check_success()` (full goal), not only horizon. |
-| 3        | `info` | `dict` | Starts as `{}` from robosuite’s `_post_action`, then LIBERO **adds** the keys below when the corresponding flags are set. |
-
-No other keys are guaranteed unless your wrappers add them.
+> **DEPRECATED:** This document describes the **pre-refactor** monolithic `BDDLBaseDomain`
+> `info` contract. It is retained for historical reference only.
+>
+> **For the current contract:** See
+> [`libero/libero/envs/wrappers/SIM_STEP_INFO.md`](./wrappers/SIM_STEP_INFO.md) for the
+> new `BDDLSimStepInfo` schema, and
+> [`libero/libero/envs/wrappers/DESIGN.md`](./wrappers/DESIGN.md) for the authoritative
+> two-layer design.
+>
+> **Last updated:** Track E documentation refactor (docs/sim-wrapper-refactor).
 
 ---
 
-## Constructor flags that control `info`
+## What Changed
 
-These are **not** part of `info`; they are `BDDLBaseDomain.__init__` arguments (often passed through `OffScreenRenderEnv(**kwargs)`):
+The LIBERO-Plus refactor moved from a monolithic `BDDLBaseDomain` that computed shaped
+rewards internally to a two-layer design:
 
-| Parameter               | Default | Effect on `info` |
-|-------------------------|---------|-------------------|
-| `subtask_reward`        | `False` | When `True`, adds subtask shaping keys (see below). |
-| `subtask_reward_scale`  | `0.5`   | Scales normalized BDDL weights; affects numeric values in `reward` and in increment dicts. |
-| `subtask_confirmation_steps` | `10` | Consecutive steps required before `on` / `in` subtasks credit (see `_evaluate_subtask_rewards`). |
-| `track_subtask_info`    | `False` | When `True`, adds `subtask_info` every step. |
+- **Sim layer** emits only `raw_predicates: dict[str, bool]` and `l4_satisfied: bool`.
+  Sparse reward only. No per-episode state in the sim.
+- **Wrapper layer** (`HierarchicalRewardWrapper`) owns all shaped reward computation,
+  L3 one-shot history, and NL status string.
+
+The following old `info` keys are **no longer emitted** by the sim:
+
+| Old key | Replacement |
+|---------|-------------|
+| `subtask_rewards` (cumulative bool dict) | Wrapper's `_l3_history` |
+| `subtask_reward_increment` (new-credit dict) | Wrapper's `predicate_deltas` (Track C) |
+| `subtask_reward_delta` (scalar sum) | Wrapper's `predicate_deltas` (Track C) |
+| `subtask_info` (dry-run bool dict) | No longer needed; wrapper re-uses `raw_predicates` |
+
+The following constructor flags that gated `info` population are **removed**:
+
+| Old flag | Status |
+|----------|--------|
+| `subtask_reward=True` | Removed. Info is always emitted. |
+| `track_subtask_info=True` | Removed. No dry-run evaluation path. |
+| `subtask_reward_scale` | Removed. Use `RewardConfig.weights`. |
+| `subtask_confirmation_steps` | Removed. No confirmation window. |
 
 ---
 
-## `info` keys: current interface (after the change)
+## New `info` Contract (Current)
 
-When **`subtask_reward=True`**, LIBERO sets:
+Every `step()` from the sim unconditionally returns:
+
+```python
+info = {
+    "raw_predicates": dict[str, bool],  # L1::*, L2::*, L3::*, L4 keys
+    "l4_satisfied":   bool,             # must equal raw_predicates["L4"]
+    # transitional (will be removed when Track A is complete):
+    "subtask_history": dict[str, bool], # L3 one-shot; being moved to wrapper
+}
+```
+
+See [`libero/libero/envs/wrappers/SIM_STEP_INFO.md`](./wrappers/SIM_STEP_INFO.md) for
+the full field reference and key naming rules.
+
+After passing through `HierarchicalRewardWrapper`, the `info` is the sim's `info`
+passed through unchanged (the wrapper may add `predicate_deltas` in Track C).
+
+---
+
+## Legacy Contract (Pre-Refactor, For Historical Reference)
+
+The old `BDDLBaseDomain` added these keys to `info` when flags were set:
+
+### When `subtask_reward=True`
 
 | Key | Type | Semantics |
 |-----|------|-----------|
-| `subtask_rewards` | `dict[str, bool]` | Per subtask: **cumulative** “ever satisfied this episode” (one-shot), matching the evaluation used inside `reward()` for that step. Keys are BDDL `:subtask` **names** if `(:subtask_rewards ...)` exists; otherwise goal-predicate keys `"_".join(pred)` for each flat goal atom in coarse mode. |
-| `subtask_reward_increment` | `dict[str, float]` | **Only subtasks newly credited on this step** (difference in internal `_subtask_ever_satisfied` before vs after the transition). Map: subtask name (or coarse key) → weight credited this step. Empty `{}` when nothing new was satisfied. Weights are already scaled (fine: normalized from BDDL to sum to `subtask_reward_scale`; coarse: `subtask_reward_scale / N` per new goal atom). |
-| `subtask_reward_delta` | `float` | `sum(subtask_reward_increment.values())`. Always `0.0` when the increment dict is empty. |
+| `subtask_rewards` | `dict[str, bool]` | Cumulative one-shot booleans for each subtask this episode. Keys were BDDL `:subtask` names (fine mode) or `"_".join(pred)` strings (coarse mode). |
+| `subtask_reward_increment` | `dict[str, float]` | Subtasks **newly credited on this step** → their scaled weight. Empty `{}` when nothing new. |
+| `subtask_reward_delta` | `float` | `sum(subtask_reward_increment.values())`. |
 
-When **`track_subtask_info=True`**, LIBERO also sets:
+### When `track_subtask_info=True`
 
 | Key | Type | Semantics |
 |-----|------|-----------|
-| `subtask_info` | `dict[str, bool]` | Same shape as `subtask_rewards`, but from `_evaluate_subtask_rewards(dry_run=True)`: **does not** mutate `_subtask_ever_satisfied` or confirmation counters on disk for that call’s side effects beyond what `reward()` already did. Useful for logging / progress without changing credit state. When both flags are true, `subtask_info` is computed **after** the step and can differ slightly from `subtask_rewards` in edge cases involving dry-run confirmation accounting. |
+| `subtask_info` | `dict[str, bool]` | Result of `_evaluate_subtask_rewards(dry_run=True)`. Instantaneous check without mutating episode state. |
 
-When **`subtask_reward=False`**, LIBERO does **not** add `subtask_rewards`, `subtask_reward_increment`, or `subtask_reward_delta`.
+### Why `subtask_reward` (dict) was renamed
 
----
-
-## Previous interface (before the change)
-
-Behavior was the same except for the **incremental** payload key name:
-
-| Then | Now |
-|------|-----|
-| `info["subtask_reward"]` = `dict[str, float]` (newly credited weights this step) | **Removed** from LIBERO to avoid clashing with wrappers that merge `subtask_reward=True` into `info`. |
-| *(no scalar sum key)* | `info["subtask_reward_delta"]` = `float` |
-| *(same)* | `info["subtask_reward_increment"]` = `dict[str, float]` (same dict as old `subtask_reward`) |
-
-`subtask_rewards` and optional `subtask_info` were already present and are **unchanged** in meaning.
+Some training stacks merged constructor kwargs into `info`, causing `info["subtask_reward"]`
+to be a boolean (`True`/`False`) instead of the expected dict. The fix renamed the
+dict to `subtask_reward_increment` and added an explicit float `subtask_reward_delta`.
 
 ---
 
-## Why `info["subtask_reward"]` was removed
+## Migration Guide (from old to new)
 
-Some training stacks merge **environment constructor kwargs** (e.g. `subtask_reward=True`) into the per-step `info` dict under the same key `subtask_reward`. That produces a **boolean** where code expected a **dict**, breaks parsing, and prevents fallback branches (e.g. on `subtask_info`) from running. Renaming the env-produced dict to `subtask_reward_increment` and exposing an explicit float `subtask_reward_delta` avoids that collision.
+If you have code consuming the old `info` keys:
+
+| Old code | New code |
+|----------|----------|
+| `info["subtask_rewards"]["my_subtask"]` | `wrapper._l3_history["my_subtask"]` |
+| `info["subtask_reward_increment"]` | `info.get("predicate_deltas", {})` (Track C) |
+| `info["subtask_reward_delta"]` | `sum(info.get("predicate_deltas", {}).values())` (Track C) |
+| `info["subtask_info"]` | `info["raw_predicates"]` — use `L3::<S>` keys |
+
+For the shaped reward value, read the `reward` return value from
+`HierarchicalRewardWrapper.step()` directly — it is the shaped reward.
 
 ---
 
-## Migration for downstream code
+## Example: Old vs New `info`
 
-1. Replace reads of `info["subtask_reward"]` (dict) with **`info["subtask_reward_increment"]`**.
-2. For scalar logging or bonus shaping from **this step only**, use **`info["subtask_reward_delta"]`**.
-3. Do not put the constructor flag into `info` as `subtask_reward`; use a different key (e.g. `use_subtask_reward`) if you need to record it.
-4. If you must branch on a key, use **`isinstance(info.get("subtask_reward_increment"), dict)`** rather than **`"subtask_reward" in info`**, unless you control merges so the value cannot be a bool.
-
----
-
-## Example `info` fragments
-
-**`subtask_reward=True`, fine-grained BDDL subtasks, middle of episode, one new subtask this step:**
+**Old `info` (pre-refactor, `subtask_reward=True`, one new credit this step):**
 
 ```python
 {
     "subtask_rewards": {
         "place_moka_pot_1": True,
-        "place_moka_pot_2": False,
-        "turnon_stove": True,
+        "turnon_stove":     False,
     },
-    "subtask_reward_increment": {"place_moka_pot_1": 0.16666666666666666},
-    "subtask_reward_delta": 0.16666666666666666,
+    "subtask_reward_increment": {"place_moka_pot_1": 0.5},
+    "subtask_reward_delta": 0.5,
 }
 ```
 
-**Same situation, no new credit this step:**
+**New `info` (post-refactor, from sim passthrough):**
 
 ```python
 {
-    "subtask_rewards": { ... },  # same cumulative booleans as appropriate
-    "subtask_reward_increment": {},
-    "subtask_reward_delta": 0.0,
+    "raw_predicates": {
+        "L1::place_moka_pot_1": False,
+        "L2::place_moka_pot_1": False,
+        "L3::place_moka_pot_1": True,
+        "L1::turnon_stove":     False,
+        "L2::turnon_stove":     False,
+        "L3::turnon_stove":     False,
+        "L4":                   False,
+    },
+    "l4_satisfied": False,
+    # transitional:
+    "subtask_history": {"place_moka_pot_1": True, "turnon_stove": False},
 }
 ```
 
-**`subtask_reward=False`, `track_subtask_info=True`:**
-
-```python
-{
-    "subtask_info": {"place_moka_pot_1": False, ...},
-}
-```
+Shaped reward is the return value of `HierarchicalRewardWrapper.step()`, not an
+`info` key. Progress state is in `wrapper._l3_history`.
 
 ---
 
-## Reference implementation
+## Reference Implementation
 
-Source of truth: `libero/libero/envs/bddl_base_domain.py` — `step()`, `reward()`, and `_evaluate_subtask_rewards()`.
+- **Current sim:** `libero/libero/envs/bddl_base_domain.py` — `step()`, `reward()`.
+- **Current wrapper:** `libero/libero/hierarchical_reward_wrapper.py`.
+- **Contract validation:** `libero/libero/bddlsim_interface.validate_sim_step_info`.

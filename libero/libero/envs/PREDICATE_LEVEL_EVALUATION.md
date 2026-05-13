@@ -1,161 +1,186 @@
-# Predicate-level (hierarchical) evaluation
+# Predicate-Level (Hierarchical) Evaluation
 
-This document describes **LIBERO_PLUS** support for evaluating manipulation progress at multiple semantic levels: **localization (L1)**, **grasping (L2)**, **subtasks (L3)**, and how that relates to **task ordering (L4)**. It complements [SUBTASK_CONTROL_FLOW.md](./SUBTASK_CONTROL_FLOW.md) (orchestration and rewards) and [SUBTASK_STEP_INFO.md](./SUBTASK_STEP_INFO.md) (`info` keys).
+> **Last updated:** Track E documentation refactor (docs/sim-wrapper-refactor).
+> **Canonical design:** [`libero/libero/envs/wrappers/DESIGN.md`](./wrappers/DESIGN.md).
+> **Canonical code:** `libero/libero/bddlsim_interface.py` and
+> `libero/libero/hierarchical_reward_wrapper.py`.
 
----
-
-## Conceptual levels
-
-| Level | Intent | Realization in code |
-|-------|--------|---------------------|
-| **L1** | Object **localization**: the robot is near the target object, moving slowly enough, and this object is the **closest** among simulated manipulables. | `LocalizedNearEEF` (`localizedneareef` in BDDL). |
-| **L2** | Object **grasping**: the gripper contacts the object and **no other body** (table, shelf, other links) is in contact with it; optional **horizontal** tool-axis constraint for mug-like picks. | `DefaultGraspPredicate` / `HorizontalGraspPredicate` (`defaultgrasppredicate`, `horizontalgrasppredicate`). |
-| **L3** | **Subtask** progress: named steps with optional **`:after`** ordering, weights, and (for `on` / `in`) confirmation delays. | `(:subtask_rewards ...)` in BDDL + `_evaluate_subtask_rewards` in `BDDLBaseDomain`. |
-| **L4** | **Out-of-order execution** (distinct scoring or detection of trajectories that violate intended stage order). | **Not implemented** as a dedicated predicate or metric; see [L4 status](#l4-out-of-order-execution) below. |
-
-**Related unary/binary helpers** (not assigned to L1–L4 above) include `NearEEF`, `Near`, `Grasp` (loose contact), and `ExactIn` (stricter containment)—see `predicates/base_predicates.py` and `predicates/__init__.py`.
+This document describes how LIBERO-Plus evaluates manipulation progress at four
+semantic levels: **localization (L1)**, **grasping (L2)**, **subtask completion (L3)**,
+and **terminal goal satisfaction (L4)**. It also describes which layer owns each level.
 
 ---
 
-## L1: `LocalizedNearEEF`
+## Two-Layer Design Summary
 
-**Source:** `libero/libero/envs/predicates/base_predicates.py` — class `LocalizedNearEEF`.
+The refactored architecture splits concerns across two layers:
 
-**BDDL:** Parametric predicate `localizedneareef` (see `PARAMETRIC_PREDICATE_CLS` in `predicates/__init__.py`). Numeric tokens after object name(s) configure thresholds:
+| Layer | Responsibility |
+|-------|----------------|
+| **Simulator** (`BDDLBaseDomain`) | Evaluates raw predicates each step. Emits `raw_predicates: dict[str, bool]` and `l4_satisfied: bool`. Fully stateless — no one-shot latching. |
+| **Wrapper** (`HierarchicalRewardWrapper`) | Owns L3 one-shot history, L1/L2 transient delta detection, shaped reward computation, and NL status string. |
 
-- **0 numbers:** defaults (`dist_threshold=0.12`, `vel_threshold=0.25`).
-- **1 number:** `dist_threshold` only; velocity check uses default.
-- **2+ numbers:** `dist_threshold`, `vel_threshold` (additional numerics are not passed through to `robot_idx`; the active arm index stays the default `0` unless changed in Python).
-
-**Semantics (all must hold):**
-
-1. Euclidean distance from the object’s body pose (via `ObjectState.get_geom_state()["pos"]`) to the end-effector is **strictly less than** `dist_threshold`.
-2. If `vel_threshold` is not `None`, EEF linear speed (via `_eef_linear_speed`, preferring robosuite’s hand velocity) must be **strictly less than** `vel_threshold`.
-3. For every **other** name in `env.objects_dict`, that object’s body position must **not** be strictly closer to the EEF than the current object (comparison uses a small epsilon on the competing distance).
-
-**Caveats:**
-
-- **Distance ties:** Another object at the **same** distance as the target does not fail the “closest” test (strict inequality). Two objects can both satisfy L1 in the same step if equidistant.
-- **Candidate set:** Only `objects_dict` entries are considered competitors; fixtures are not compared.
-- **Subtask gating:** When used inside `(:subtask_rewards ...)`, L1 predicates are **not** subject to the multi-step `on`/`in` confirmation counter; they credit **immediately** when true and `_subtask_candidate_valid` passes (which for non-placement predicates is just the predicate value).
+The sim never accumulates episode state. The wrapper accumulates `_l3_history`,
+`_l1_prev`, `_l2_prev`, and computes shaped reward via `RewardConfig`.
 
 ---
 
-## L2: `DefaultGraspPredicate` and `HorizontalGraspPredicate`
+## Level Definitions
 
-**Source:** `base_predicates.py` — `DefaultGraspPredicate`, `HorizontalGraspPredicate`.
+| Level | Name | Owner | Firing | Semantics |
+|-------|------|-------|--------|-----------|
+| **L1** | Localization | Wrapper (auto-derived) | Transient: re-fires every step it is true | Primary object is near the end-effector. |
+| **L2** | Grasp | Wrapper (auto-derived) | Transient: re-fires every step it is true | Gripper grasping primary object. Only evaluated for `on`/`in` subtasks. |
+| **L3** | Subtask | Sim (predicate) + Wrapper (latch) | One-shot: credited once per episode | BDDL-declared subtask predicate is true this step; wrapper latches in `_l3_history`. |
+| **L4** | Terminal | Sim (predicate) + Wrapper (latch) | One-shot: credited once per episode | Full `(:goal ...)` satisfaction. `raw_predicates["L4"]` must equal `l4_satisfied`. |
 
-**BDDL:** Non-parametric entries in `VALIDATE_PREDICATE_FN_DICT`:
+---
 
-- `defaultgrasppredicate` — unary (one object token).
-- `horizontalgrasppredicate` — unary; adds a tool-z vs object-up alignment check after the default grasp passes.
+## L1: Localization (Auto-Derived by Wrapper)
 
-**`DefaultGraspPredicate` semantics:**
+L1 is **not declared in BDDL** for each subtask. The wrapper derives it automatically
+from the primary object of each L3 subtask using `LocalizedNearEEF` semantics.
+
+**Primary object rule:** The primary object for subtask `S` is the first non-numeric
+token in that subtask's `predicate_args` list. This is computed by
+`_first_obj_state_from_goal_tokens` in `bddl_base_domain.py`.
+
+**Predicate semantics (evaluated by sim, reported as `L1::<S>`):**
+
+1. Euclidean distance from the object's body position to the end-effector is strictly
+   less than `dist_threshold` (default `0.12`).
+2. EEF linear speed is strictly less than `vel_threshold` (default `0.25`) when the
+   threshold is set.
+3. No other object in `objects_dict` is strictly closer to the EEF than the target
+   object (closest-object tie-breaking with a small epsilon).
+
+**Key:** `raw_predicates["L1::<S>"]` — instantaneous boolean, re-evaluated every step.
+
+**Reward:** Wrapper computes delta vs `_l1_prev[S]` and fires `weight["L1"]` on
+positive transitions (or all positive steps, depending on delta mode in Track C).
+
+---
+
+## L2: Grasp (Auto-Derived by Wrapper)
+
+L2 is **not declared in BDDL** for each subtask. The wrapper derives it automatically,
+but only for subtasks whose predicate is `on` or `in` (pick-and-place operations).
+
+**L2 is skipped for:** `turnon`, `turnoff`, `open`, `close`, and any other non-placement
+predicate. The corresponding `L2::<S>` key in `raw_predicates` will be present but
+is only used for shaping on pick-and-place subtasks.
+
+**Predicate semantics (evaluated by sim, reported as `L2::<S>`):** Corresponds to
+`DefaultGraspPredicate`:
 
 1. `env.check_contact(robot.gripper, obj)` is true.
-2. `env.get_contacts(obj)` (robosuite `MujocoEnv.get_contacts`) returns the set of **external** geom names touching the object’s `contact_geoms`. **Every** such geom name must appear in the flattened `gripper.important_geoms` map. Thus table, shelf, or non-gripper robot links still touching the object cause failure—appropriate for “lifted or isolated” grasps.
+2. Every external geom touching `obj.contact_geoms` appears in
+   `gripper.important_geoms`. This means table/shelf contacts cause failure — L2
+   requires an isolated (lifted or free-floating) grasp.
 
-**`HorizontalGraspPredicate`:** Same as default, then `|dot(z_tool, z_obj)| <= max_abs_dot` where `z_tool` is from the gripper’s `ee_z` site when available, and `z_obj` is the object body’s world +z axis. Tuned for **upright mug-like** objects; other categories may need different axes.
+**Key:** `raw_predicates["L2::<S>"]` — instantaneous boolean, re-evaluated every step.
 
-**Caveats:**
+**Reward:** Wrapper computes delta vs `_l2_prev[S]` and fires `weight["L2"]` on
+positive transitions for `on`/`in` subtasks only.
 
-- If `important_geoms` is empty, the “gripper-only contacts” check returns false.
-- Geom names from MuJoCo must match those listed for the gripper; version or model differences can cause false negatives.
-- `max_abs_dot` for horizontal grasp is **fixed** in the registered instance; tuning from BDDL would require extending `instantiate_predicate` / BDDL parsing.
+> **Deferred:** A no-contact gate (`_subtask_candidate_valid`) that additionally
+> required the object not be in contact with the gripper during placement credit is
+> deferred. A TODO in the wrapper's delta logic marks where this will land.
 
 ---
 
-## L3: Subtasks (composition with L1/L2)
+## L3: Subtask Completion
 
-L3 is **not** a single predicate class. It is the **fine-grained subtask list** in BDDL:
+L3 represents the completion of a named manipulation subtask declared in BDDL with
+`(:subtask_rewards ...)` or synthesized from `(:goal ...)` conjuncts.
 
-```text
-(:subtask_rewards
-  (:subtask name_1 ... :predicate (...) ... :after (...))
-  ...
-)
+**Sim responsibility:** Evaluates the BDDL predicate for each subtask slot on every
+step. Reports `raw_predicates["L3::<S>"]` as an instantaneous boolean — no latching,
+no confirmation counting.
+
+**Wrapper responsibility:** Maintains `_l3_history: dict[str, bool]`, which starts all
+`False` at episode reset. When `raw_predicates["L3::<S>"]` is `True` and
+`_l3_history[S]` is `False`, the wrapper fires the L3 delta reward and sets
+`_l3_history[S] = True`. Subsequent steps where L3 is true do not re-fire.
+
+**Behaviors dropped from old design:**
+
+- **Multi-step confirmation** (`_subtask_confirmation_counts`): L3 now credits on the
+  first step the predicate is true. No N-step confirmation window.
+- **`:after` ordering**: `:after` prerequisite fields are no longer enforced. Subtasks
+  are credited independently.
+- **Coarse mode vs fine-grained mode**: The distinction is no longer meaningful; all
+  goal conjuncts are evaluated as independent subtask slots.
+
+**Key:** `raw_predicates["L3::<S>"]` — instantaneous; `_l3_history[S]` in wrapper —
+persistent one-shot for the episode.
+
+---
+
+## L4: Terminal Goal
+
+L4 represents full `(:goal ...)` satisfaction.
+
+**Sim responsibility:** Evaluates all goal conjuncts. Sets `l4_satisfied = True` and
+`raw_predicates["L4"] = True` when all are satisfied. Both must agree (validated by
+`validate_sim_step_info`).
+
+**Wrapper responsibility:** Latches L4 once `l4_satisfied` is first observed as `True`.
+Fires `weight["L4"]` delta reward on the first step of satisfaction, then never again.
+
+The sim emits **sparse reward** `1.0` on terminal success; the wrapper adds the L4
+shaped reward component on top of this (or replaces it, per `RewardConfig` design).
+
+---
+
+## raw_predicates Key Naming
+
+For a task with subtasks `["pick_mug", "place_on_rack"]`:
+
+```python
+{
+    "L1::pick_mug":     True,   # mug is near EEF this step
+    "L2::pick_mug":     True,   # gripper holding mug this step
+    "L3::pick_mug":     False,  # mug not yet on rack
+    "L1::place_on_rack": False,
+    "L2::place_on_rack": False,
+    "L3::place_on_rack": False,
+    "L4":               False,  # goal not yet satisfied
+}
 ```
 
-Parsed by `parse_subtask_rewards` in `bddl_utils.py` and evaluated in `BDDLBaseDomain._evaluate_subtask_rewards`.
-
-**Using L1/L2 inside subtasks:** The `:predicate` field may reference `localizedneareef`, `defaultgrasppredicate`, `horizontalgrasppredicate`, or other registered predicates. Ordering between subtasks is enforced with **`:after`** (prerequisite names must appear in the ever-satisfied set). **`on` / `in`** subtasks use `subtask_confirmation_steps` (or per-subtask `:confirm_steps`); most other predicates, including L1/L2, credit **on the first step** they pass validation.
-
-**Coarse mode** (no `(:subtask_rewards ...)`): Each `(:goal ...)` conjunct is an equal-weight subtask with **no** ordering—see [SUBTASK_CONTROL_FLOW.md](./SUBTASK_CONTROL_FLOW.md).
+Keys are built in BDDL declaration order: L1/L2/L3 triple for each subtask in order,
+then `L4`.
 
 ---
 
-## L4: Out-of-order execution
+## Predicate Implementations
 
-**Current status:** There is **no** separate L4 implementation (no predicate, flag, or `info` field) that **detects** or **scores** “out-of-order” execution relative to a reference ordering.
+The underlying predicate classes (used by the sim) are:
 
-What exists today:
+| BDDL token | Python class | Notes |
+|------------|-------------|-------|
+| *(L1, auto-derived)* | `LocalizedNearEEF` | Parametric; see `predicates/__init__.py`. |
+| *(L2, auto-derived)* | `DefaultGraspPredicate` | Fixed instance in `VALIDATE_PREDICATE_FN_DICT`. |
+| `horizontalgrasppredicate` | `HorizontalGraspPredicate` | Alternative for mug-like picks; adds tool-z / object-z alignment check. |
+| `on`, `in`, `open`, `close`, `turnon`, `turnoff` | Various | Declared in BDDL `:subtask_rewards`; evaluated as L3. |
+| `neareef` | `NearEEF` | Parametric distance-only (weaker than L1). |
+| `grasp` | `Grasp` | Weak contact check (weaker than L2). |
 
-- **Fine-grained subtasks** with **`:after`** **gate** credit: a later subtask does not receive reward until prerequisites have been credited at least once this episode. That enforces a **partial order**; it does not by itself emit an “OOO” diagnostic or penalty signal.
-- **Coarse** goal-atom subtasks allow **any** order of partial completion.
-
-If L4 is required (e.g. logging whether the agent achieved stage B before stage A, or shaping penalties for OOO), that would be **new** logic on top of `_evaluate_subtask_rewards` or a separate evaluator.
-
----
-
-## Goal evaluation vs subtask predicates
-
-Full-episode **success** (`done`, sparse reward when `subtask_reward=False`) still requires **all** `(:goal ...)` conjuncts as today. L1/L2 predicates can appear in `(:goal ...)` as well, via `_eval_goal_predicate_state` in `bddl_base_domain.py`, which supports both dictionary predicates and parametric ones (`PARAMETRIC_PREDICATE_CLS`).
-
----
-
-## Registration and parsing
-
-| BDDL token (typical) | Python class | Notes |
-|----------------------|--------------|--------|
-| `localizedneareef` | `LocalizedNearEEF` | Parametric; see `instantiate_predicate`. |
-| `neareef` | `NearEEF` | Parametric; distance only. |
-| `near` | `Near` | Parametric binary distance. |
-| `defaultgrasppredicate` | `DefaultGraspPredicate` | Fixed instance in dict. |
-| `horizontalgrasppredicate` | `HorizontalGraspPredicate` | Fixed instance in dict. |
-| `grasp` | `Grasp` | Weaker: any gripper–object contact. |
-
-Full lists: `VALIDATE_PREDICATE_FN_DICT` and `PARAMETRIC_PREDICATE_CLS` in `libero/libero/envs/predicates/__init__.py`.
+Full registration: `VALIDATE_PREDICATE_FN_DICT` and `PARAMETRIC_PREDICATE_CLS` in
+`libero/libero/envs/predicates/__init__.py`.
 
 ---
 
-## Example BDDL fragments
-
-**L1 as a subtask (illustrative):**
-
-```lisp
-(:subtask localize_mug
-  :predicate (localizedneareef yellow_mug_1 0.12 0.25)
-  :reward 0.2
-)
-```
-
-**L2 after L1 (ordering via `:after`):**
-
-```lisp
-(:subtask grasp_mug
-  :predicate (defaultgrasppredicate yellow_mug_1)
-  :reward 0.3
-  :after (localize_mug)
-)
-```
-
-Exact BDDL surface syntax must match what `robosuite_parse_problem` / `parse_subtask_rewards` emit for your suite; adjust parentheses and token order to match existing task files under `libero/libero/bddl_files/`.
-
----
-
-## Related files
+## Related Files
 
 | File | Role |
 |------|------|
-| `libero/libero/envs/predicates/base_predicates.py` | L1/L2 (and helper) predicate implementations. |
-| `libero/libero/envs/predicates/__init__.py` | BDDL name → class / instances. |
-| `libero/libero/envs/bddl_utils.py` | `parse_subtask_rewards`, parametric instantiation in subtasks. |
-| `libero/libero/envs/bddl_base_domain.py` | Goal eval, subtask evaluation, `_subtask_candidate_valid`. |
-| [SUBTASK_CONTROL_FLOW.md](./SUBTASK_CONTROL_FLOW.md) | End-to-end subtask pipeline. |
-| [SUBTASK_STEP_INFO.md](./SUBTASK_STEP_INFO.md) | Per-step `info` contract. |
-
----
-
-## Adoption note
-
-New L1/L2 predicates are **registered and evaluable** from BDDL; many shipped `.bddl` files still use classic atoms (`on`, `in`, etc.) for goals and subtasks. Adding `localizedneareef` / `defaultgrasppredicate` to a task’s `(:subtask_rewards ...)` (or `(:goal ...)`) is how you opt into predicate-level evaluation for that task.
+| `libero/libero/envs/wrappers/DESIGN.md` | **Authoritative** two-layer design document. |
+| `libero/libero/bddlsim_interface.py` | `BDDLSimStepInfo`, `validate_sim_step_info`, `FakeBDDLEnv` (MuJoCo-free). |
+| `libero/libero/hierarchical_reward_wrapper.py` | `RewardConfig`, `HierarchicalRewardWrapper` (MuJoCo-free). |
+| `libero/libero/envs/predicates/base_predicates.py` | `LocalizedNearEEF`, `DefaultGraspPredicate`, `HorizontalGraspPredicate`. |
+| `libero/libero/envs/predicates/__init__.py` | BDDL token → predicate class/instance registration. |
+| `libero/libero/envs/bddl_base_domain.py` | Sim implementation; `_first_obj_state_from_goal_tokens`. |
+| `libero/libero/envs/SUBTASK_CONTROL_FLOW.md` | End-to-end pipeline data flow. |
+| `libero/libero/envs/wrappers/SIM_STEP_INFO.md` | `BDDLSimStepInfo` contract reference. |
