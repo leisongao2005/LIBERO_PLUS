@@ -25,7 +25,7 @@ import importlib.util as _ilu
 import sys as _sys
 from dataclasses import dataclass, field
 from pathlib import Path as _Path
-from typing import Dict, Literal, Mapping, MutableMapping, Optional, Sequence, Tuple, cast
+from typing import Dict, List, Literal, Mapping, MutableMapping, Optional, Sequence, Tuple, cast
 
 import gym
 
@@ -140,13 +140,19 @@ class HierarchicalRewardWrapper(gym.Wrapper):
             tuple(subtask_names_ordered) if subtask_names_ordered is not None else None
         )
         self._resolved_subtask_names: Optional[Tuple[str, ...]] = self._explicit_subtask_names
-        # Per-episode state
-        self._l1_prev: Dict[str, bool] = {}
-        self._l2_prev: Dict[str, bool] = {}
+        # Per-episode one-shot history — all four levels fire at most once per episode.
+        # Using one-shot latches for L1/L2 (not transient edge detection) prevents reward
+        # farming: the model cannot re-earn L1/L2 rewards by releasing and re-approaching.
+        self._l1_history: Dict[str, bool] = {}
+        self._l2_history: Dict[str, bool] = {}
         # L3 one-shot bitmask keyed by plain subtask name (see module docstring).
         self._l3_history: Dict[str, bool] = {}
         # L4 one-shot bitmask (single key "L4").
         self._l4_history: Dict[str, bool] = {}
+        # Full per-step predicate trajectory for the current episode.
+        # Each entry is {"step": int, "raw": Dict[str, bool], "shaped_reward": float}.
+        # Accessible via .predicate_trajectory; cleared on reset.
+        self._predicate_trajectory: List[Dict] = []
 
     def reset(self, **kwargs):  # type: ignore[override]
         self._clear_episode_state()
@@ -161,11 +167,11 @@ class HierarchicalRewardWrapper(gym.Wrapper):
         subtask_names = self._resolved_subtask_names
         assert subtask_names is not None, "_resolved_subtask_names must be set before step"
 
-        # --- L1/L2 transient delta detection ---
+        # --- L1/L2 one-shot latch (same semantics as L3/L4: fire at most once per episode) ---
         l1_keys = [f"L1::{s}" for s in subtask_names]
         l2_keys = [f"L2::{s}" for s in subtask_names]
-        l1_deltas = _delta.detect_transient_deltas(self._l1_prev, raw, l1_keys)
-        l2_deltas = _delta.detect_transient_deltas(self._l2_prev, raw, l2_keys)
+        self._l1_history, l1_fired = _delta.apply_one_shot_latch(self._l1_history, raw, l1_keys)
+        self._l2_history, l2_fired = _delta.apply_one_shot_latch(self._l2_history, raw, l2_keys)
 
         # --- L3 one-shot latch (plain-name keys in _l3_history) ---
         # Build a plain-name dict so apply_one_shot_latch stores plain keys,
@@ -184,7 +190,7 @@ class HierarchicalRewardWrapper(gym.Wrapper):
 
         # --- Shaped reward ---
         shaped = _delta.compute_shaped_reward(
-            {**l1_deltas, **l2_deltas},
+            {**l1_fired, **l2_fired},
             {**l3_fired, **l4_fired},
             self.reward_config.weights,
             list(subtask_names),
@@ -195,30 +201,95 @@ class HierarchicalRewardWrapper(gym.Wrapper):
         status = _status.format_status_string(list(subtask_names), self._l3_history, raw)
         _status.append_status_to_obs(obs, self.instruction_key, status)
 
-        # --- Update prev state for next step ---
-        self._l1_prev = dict(raw)
-        self._l2_prev = dict(raw)
-
         # --- Expose wrapper outputs in info ---
         # Always include all keys (False when not fired) so downstream consumers
         # can index without checking membership.
+        l1_all: Dict[str, bool] = {k: l1_fired.get(k, False) for k in l1_keys}
+        l2_all: Dict[str, bool] = {k: l2_fired.get(k, False) for k in l2_keys}
         l3_all: Dict[str, bool] = {f"L3::{s}": l3_fired.get(f"L3::{s}", False) for s in subtask_names}
         l4_all: Dict[str, bool] = {"L4": l4_fired.get("L4", False)}
-        info["predicate_deltas"] = {**l1_deltas, **l2_deltas, **l3_all, **l4_all}
+        info["predicate_deltas"] = {**l1_all, **l2_all, **l3_all, **l4_all}
         info["privileged_status"] = status
         info["shaped_reward"] = shaped
 
+        # Append to per-episode trajectory (one entry per step).
+        self._predicate_trajectory.append({
+            "step": len(self._predicate_trajectory),
+            "raw": dict(raw),
+            "shaped_reward": shaped,
+        })
+
         return obs, reward, done, info
+
+    @property
+    def predicate_trajectory(self) -> List[Dict]:
+        """Read-only view of per-step predicate history for the current episode.
+
+        Each entry: ``{"step": int, "raw": Dict[str, bool], "shaped_reward": float}``.
+        Cleared on reset. Safe to read at episode end for post-hoc reward analysis.
+        """
+        return list(self._predicate_trajectory)
+
+    def print_predicate_history(self) -> None:
+        """Print a human-readable table of predicate values over the episode.
+
+        One row per step. Columns: step, shaped_reward, then one column per predicate
+        key (sorted). True shown as ``1``, False as ``.``. Rows where shaped_reward > 0
+        are marked with ``*`` to highlight reward events.
+
+        Also prints the one-shot first-fire summary at the bottom so you can verify
+        that L1/L2 rewards were capped correctly (farming guard).
+        """
+        traj = self._predicate_trajectory
+        if not traj:
+            print("[predicate history] no steps recorded")
+            return
+
+        # Collect all predicate keys (sorted for stable column order).
+        all_keys = sorted(traj[0]["raw"].keys())
+        header_cols = ["step", "reward"] + all_keys
+        col_w = max(len(k) for k in header_cols)
+
+        def fmt(val):
+            if isinstance(val, bool):
+                return "1" if val else "."
+            if isinstance(val, float):
+                return f"{val:.3f}"
+            return str(val)
+
+        # Header
+        print("  ".join(c.rjust(col_w) for c in header_cols))
+        print("  ".join("-" * col_w for _ in header_cols))
+
+        for entry in traj:
+            step = entry["step"]
+            sr = entry["shaped_reward"]
+            marker = "*" if sr > 0 else " "
+            row = [str(step), f"{sr:.3f}"] + [fmt(entry["raw"].get(k, False)) for k in all_keys]
+            print(marker + " ".join(c.rjust(col_w) for c in row))
+
+        # One-shot first-fire summary
+        print()
+        print("First-fire summary (one-shot latch state — each key earns reward at most once):")
+        combined = {
+            **{k: v for k, v in self._l1_history.items()},
+            **{k: v for k, v in self._l2_history.items()},
+            **{f"L3::{k}": v for k, v in self._l3_history.items()},
+            **self._l4_history,
+        }
+        for k in sorted(combined):
+            print(f"  {k}: {'fired' if combined[k] else 'never'}")
 
     def _clear_episode_state(self) -> None:
         if self._explicit_subtask_names is None:
             self._resolved_subtask_names = None
         else:
             self._resolved_subtask_names = self._explicit_subtask_names
-        self._l1_prev.clear()
-        self._l2_prev.clear()
+        self._l1_history.clear()
+        self._l2_history.clear()
         self._l3_history.clear()
         self._l4_history.clear()
+        self._predicate_trajectory.clear()
 
     def _passthrough_sim_info(self, info: Mapping[str, object]) -> Dict[str, object]:
         if not isinstance(info, MutableMapping):

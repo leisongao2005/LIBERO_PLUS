@@ -107,7 +107,7 @@ class TestShapedReward:
         assert info["shaped_reward"] == pytest.approx(WEIGHTS["L1"])
 
     def test_l1_does_not_refire_while_held(self):
-        """L1 is transient but only fires on the False→True edge."""
+        """L1 fires once per episode — no re-fire on consecutive True steps."""
         steps = [_make_info(l1_pick=True), _make_info(l1_pick=True)]
         wrapped = _make_wrapped(steps)
         wrapped.reset()
@@ -115,6 +115,38 @@ class TestShapedReward:
         _obs, _r, _done, info1 = wrapped.step(None)  # still True: no re-fire
         assert info0["shaped_reward"] == pytest.approx(WEIGHTS["L1"])
         assert info1["shaped_reward"] == 0.0
+
+    def test_l1_does_not_refire_after_release(self):
+        """L1 must not re-earn reward after True→False→True (reward farming guard)."""
+        steps = [
+            _make_info(l1_pick=True),   # fires
+            _make_info(l1_pick=False),  # drops
+            _make_info(l1_pick=True),   # re-approaches — no second reward
+        ]
+        wrapped = _make_wrapped(steps)
+        wrapped.reset()
+        _obs, _r, _done, info0 = wrapped.step(None)
+        _obs, _r, _done, info1 = wrapped.step(None)
+        _obs, _r, _done, info2 = wrapped.step(None)
+        assert info0["shaped_reward"] == pytest.approx(WEIGHTS["L1"])
+        assert info1["shaped_reward"] == 0.0
+        assert info2["shaped_reward"] == 0.0
+
+    def test_l2_does_not_refire_after_release(self):
+        """L2 must not re-earn reward after grasp→release→grasp (reward farming guard)."""
+        steps = [
+            _make_info(l2_pick=True),   # fires
+            _make_info(l2_pick=False),  # released
+            _make_info(l2_pick=True),   # re-grasped — no second reward
+        ]
+        wrapped = _make_wrapped(steps)
+        wrapped.reset()
+        _obs, _r, _done, info0 = wrapped.step(None)
+        _obs, _r, _done, info1 = wrapped.step(None)
+        _obs, _r, _done, info2 = wrapped.step(None)
+        assert info0["shaped_reward"] == pytest.approx(WEIGHTS["L2"])
+        assert info1["shaped_reward"] == 0.0
+        assert info2["shaped_reward"] == 0.0
 
     def test_l2_fires_on_grasp(self):
         steps = [_make_info(), _make_info(l2_pick=True)]

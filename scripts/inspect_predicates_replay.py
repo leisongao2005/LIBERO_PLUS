@@ -206,6 +206,7 @@ def run_replay(
     demo_path: Optional[Path],
     n_steps: int,
     output_path: Path,
+    preview: bool = False,
 ) -> None:
     import cv2  # type: ignore
     import torch  # type: ignore
@@ -214,7 +215,6 @@ def run_replay(
     from libero.libero.envs.wrappers._delta import (
         apply_one_shot_latch,
         compute_shaped_reward,
-        detect_transient_deltas,
     )
     from libero.libero.envs.wrappers._status_string import format_status_string
 
@@ -269,9 +269,9 @@ def run_replay(
     l1_keys = [f"L1::{s}" for s in subtask_names]
     l2_keys = [f"L2::{s}" for s in subtask_names]
 
-    # Episode state
-    l1_prev: Dict[str, bool] = {}
-    l2_prev: Dict[str, bool] = {}
+    # Episode state (l1/l2 use one-shot history, not prev-step, to prevent farming)
+    l1_history: Dict[str, bool] = {}
+    l2_history: Dict[str, bool] = {}
     l3_history: Dict[str, bool] = {}
     l4_ever = False
 
@@ -291,9 +291,9 @@ def run_replay(
         raw: Dict[str, bool] = info.get("raw_predicates", {})
         l4_satisfied: bool = bool(info.get("l4_satisfied", False))
 
-        # Delta detection
-        l1_deltas = detect_transient_deltas(l1_prev, raw, l1_keys)
-        l2_deltas = detect_transient_deltas(l2_prev, raw, l2_keys)
+        # L1/L2 one-shot latch (fire at most once per episode, prevents farming)
+        l1_history, l1_fired = apply_one_shot_latch(l1_history, raw, l1_keys)
+        l2_history, l2_fired = apply_one_shot_latch(l2_history, raw, l2_keys)
 
         # One-shot latching for L3.
         # _l3_history is keyed by plain subtask name (DESIGN.md §1); _status_string.py expects this.
@@ -312,7 +312,7 @@ def run_replay(
 
         # Shaped reward
         shaped_reward = compute_shaped_reward(
-            {**l1_deltas, **l2_deltas},
+            {**l1_fired, **l2_fired},
             {**l3_fired, **l4_fired_dict},
             weights,
             subtask_names,
@@ -320,10 +320,6 @@ def run_replay(
 
         # Status string
         status = format_status_string(subtask_names, l3_history, raw)
-
-        # Update prev for next step
-        l1_prev = dict(raw)
-        l2_prev = dict(raw)
 
         # Render frame
         raw_frame = env.sim.render(camera_name="agentview", height=512, width=512)
@@ -357,15 +353,21 @@ def run_replay(
 
         video_writer.write(frame_bgr)
 
+        if preview:
+            cv2.imshow("LIBERO-Plus Predicates", frame_bgr)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                print("[preview] 'q' pressed — stopping early.")
+                break
+
         # Build summary row
         l1_vals = {s: bool(raw.get(f"L1::{s}")) for s in subtask_names}
         l2_vals = {s: bool(raw.get(f"L2::{s}")) for s in subtask_names}
         l3_vals = {s: bool(l3_history.get(s)) for s in subtask_names}
         fired_str = []
         for s in subtask_names:
-            if l1_deltas.get(f"L1::{s}"):
+            if l1_fired.get(f"L1::{s}"):
                 fired_str.append(f"L1::{s}")
-            if l2_deltas.get(f"L2::{s}"):
+            if l2_fired.get(f"L2::{s}"):
                 fired_str.append(f"L2::{s}")
             if l3_fired.get(f"L3::{s}"):
                 fired_str.append(f"L3::{s}")
@@ -387,6 +389,8 @@ def run_replay(
 
     if video_writer is not None:
         video_writer.release()
+    if preview:
+        cv2.destroyAllWindows()
     env.close()
 
     # Print summary table
@@ -452,6 +456,12 @@ def _parse_args() -> argparse.Namespace:
         metavar="PATH",
         help="Output MP4 path (default: predicate_debug.mp4).",
     )
+    parser.add_argument(
+        "--preview",
+        action="store_true",
+        default=False,
+        help="Show a live cv2 window alongside writing the MP4. Press 'q' to stop early.",
+    )
     return parser.parse_args()
 
 
@@ -462,6 +472,7 @@ def main() -> None:
         demo_path=args.demo,
         n_steps=args.steps,
         output_path=args.output,
+        preview=args.preview,
     )
 
 

@@ -22,7 +22,6 @@ Controls:
 from __future__ import annotations
 
 import argparse
-import os
 import pathlib
 import re
 import sys
@@ -37,7 +36,6 @@ from libero.libero.envs import TASK_MAPPING
 from libero.libero.envs.wrappers._delta import (
     apply_one_shot_latch,
     compute_shaped_reward,
-    detect_transient_deltas,
 )
 from libero.libero.envs.wrappers._status_string import format_status_string
 from robosuite import load_controller_config
@@ -128,8 +126,8 @@ def _make_fresh_episode_state(subtask_names: Sequence[str]) -> dict:
     """Return a clean per-episode mutable state dict."""
     return {
         "l3_history": {},
-        "l1_prev": {},
-        "l2_prev": {},
+        "l1_history": {},
+        "l2_history": {},
         "l4_ever_fired": False,
         "cumulative_shaped": 0.0,
         "step": 0,
@@ -157,7 +155,8 @@ def render_dashboard(
     status: str,
 ) -> None:
     """Clear the terminal and print a live predicate dashboard."""
-    os.write(sys.stdout.fileno(), b"\033[H\033[J")  # clear without system()
+    sys.stdout.write("\033[H\033[J")
+    sys.stdout.flush()
 
     width = 55
     print(_banner(f"LIBERO-Plus Predicate Debugger  [step {step}]", width))
@@ -214,6 +213,7 @@ def render_dashboard(
 
     print()
     print(_banner("Controls: SpaceNav/keyboard | 'q' reset | Ctrl+C quit", width))
+    sys.stdout.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +260,9 @@ def run_teleop(
                 reset_ok = True
             except Exception:
                 continue
-        _apply_init_state(init_states[0].numpy())
+        # .pruned_init files may be saved as numpy arrays or torch tensors             
+        arr = init_states[0]                                                           
+        _apply_init_state(arr.numpy() if isinstance(arr, torch.Tensor) else arr)
         env.render()
         device.start_control()
         print("Episode reset. Ready.")
@@ -296,9 +298,13 @@ def run_teleop(
 
             raw: Dict[str, bool] = info.get("raw_predicates", {})
 
-            # --- Delta detection (transient L1/L2) ---
-            l1_deltas = detect_transient_deltas(episode_state["l1_prev"], raw, l1_keys)
-            l2_deltas = detect_transient_deltas(episode_state["l2_prev"], raw, l2_keys)
+            # --- L1/L2 one-shot latch (fire at most once per episode, prevents farming) ---
+            episode_state["l1_history"], l1_fired = apply_one_shot_latch(
+                episode_state["l1_history"], raw, l1_keys
+            )
+            episode_state["l2_history"], l2_fired = apply_one_shot_latch(
+                episode_state["l2_history"], raw, l2_keys
+            )
 
             # --- One-shot latch (L3 subtasks) ---
             # apply_one_shot_latch uses the full "L3::name" keys;
@@ -321,7 +327,7 @@ def run_teleop(
 
             # --- Shaped reward ---
             step_shaped = compute_shaped_reward(
-                {**l1_deltas, **l2_deltas},
+                {**l1_fired, **l2_fired},
                 {**l3_fired, **l4_this_step_fired},
                 _WEIGHTS,
                 subtask_names,
@@ -334,15 +340,12 @@ def run_teleop(
                 subtask_names, l3_history_plain, raw
             )
 
-            # --- Update prev for next step ---
-            episode_state["l1_prev"] = dict(raw)
-            episode_state["l2_prev"] = dict(raw)
             episode_state["step"] += 1
 
             # --- Collect newly-fired events for highlighting ---
             newly_fired: Dict[str, bool] = {}
-            newly_fired.update({k: v for k, v in l1_deltas.items() if v})
-            newly_fired.update({k: v for k, v in l2_deltas.items() if v})
+            newly_fired.update({k: v for k, v in l1_fired.items() if v})
+            newly_fired.update({k: v for k, v in l2_fired.items() if v})
             newly_fired.update({k: v for k, v in l3_fired.items() if v})
             newly_fired.update({k: v for k, v in l4_this_step_fired.items() if v})
 
@@ -362,13 +365,35 @@ def run_teleop(
 
             env.render()
 
-            # --- Goal reached banner ---
+            # --- Goal reached: freeze display, stop stepping, wait for reset ---
             if episode_state["l4_ever_fired"]:
-                print(
-                    f"\n{_GREEN}{_BOLD}GOAL REACHED! "
-                    f"(cumulative shaped: {episode_state['cumulative_shaped']:.2f}){_RESET}"
-                )
-                print("Press 'q' / reset key to start a new episode, or Ctrl+C to quit.")
+                sys.stdout.write("\033[H\033[J")
+                sys.stdout.flush()
+                total = episode_state["cumulative_shaped"]
+                print(_banner(f"GOAL REACHED!  [step {episode_state['step']}]", 55))
+                print(f"{_GREEN}{_BOLD}All subtasks complete.{_RESET}")
+                print(f"Cumulative shaped reward: {_CYAN}{total:.2f}{_RESET}")
+                print()
+                print("Press 'q' to reset or Ctrl+C to quit.")
+                sys.stdout.flush()
+                # Wait without calling env.step() or render_dashboard again.
+                while True:
+                    wait_robot = (
+                        env.robots[0]
+                        if env_configuration == "bimanual"
+                        else env.robots[arm == "left"]
+                    )
+                    wait_action, _ = input2action(
+                        device=device,
+                        robot=wait_robot,
+                        active_arm=arm,
+                        env_configuration=env_configuration,
+                    )
+                    if wait_action is None:
+                        break
+                    env.render()
+                _reset_episode()
+                continue
 
     except KeyboardInterrupt:
         print("\nExiting teleop. Goodbye.")
