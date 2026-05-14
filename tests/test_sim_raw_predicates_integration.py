@@ -78,8 +78,9 @@ def _make_env(bddl_path: str, init_path: str) -> ControlEnv:
     )
     env.reset()
     init_states = torch.load(init_path, weights_only=False)
-    # init_states is a tensor of shape (N, state_dim); use first entry
-    env.set_init_state(init_states[0].numpy())
+    # .pruned_init files may be saved as numpy arrays or torch tensors
+    arr = init_states[0]
+    env.set_init_state(arr.numpy() if isinstance(arr, torch.Tensor) else arr)
     return env
 
 
