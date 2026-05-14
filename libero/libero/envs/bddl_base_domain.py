@@ -235,6 +235,19 @@ class BDDLBaseDomain(SingleArmEnv):
     # always False (see DESIGN.md §4 "L2 grasp scope").
     _PICK_PLACE_PREDICATES: frozenset = frozenset({"on", "in"})
 
+    def _gripper_touching_primary(self, obj_state, robot_idx: int = 0) -> bool:
+        """True if the gripper has any contact with obj_state.
+
+        Looser than DefaultGraspPredicate: does NOT require the gripper to be
+        the only contact. Correct for the must-release gate when the object
+        rests inside a container (basket walls also contact, making
+        DefaultGraspPredicate False even while the gripper holds the object).
+        Mirrors the Grasp predicate in base_predicates.py.
+        """
+        robot = self.robots[robot_idx]
+        obj = self.get_object(obj_state.object_name)
+        return bool(self.check_contact(robot.gripper, obj))
+
     def _l2_grasp_predicate_for_primary_object_name(self, object_name: str):
         """Return a callable(ObjectState) -> bool for the L2 grasp check.
 
@@ -257,11 +270,18 @@ class BDDLBaseDomain(SingleArmEnv):
         """Evaluate and return the instantaneous raw predicate dict for this step.
 
         Returns a dict with keys (in BDDL declaration order):
-            L1::<subtask_name>  — primary object near EEF (LocalizedNearEEF, transient)
+            L1::<subtask_name>  — primary object near EEF (LocalizedNearEEF, transient);
+                                  overridden to True when L2 is True (grasping implies
+                                  nearness — LocalizedNearEEF's velocity gate can produce
+                                  false-negatives during fast gripper motion).
             L2::<subtask_name>  — gripper grasping primary object (transient);
                                   always False for non-pick-place predicates
                                   (turnon/turnoff/open/close) — see DESIGN.md §4
-            L3::<subtask_name>  — BDDL subtask predicate, instantaneous (no latch)
+            L3::<subtask_name>  — BDDL subtask predicate, instantaneous (no latch);
+                                  False while gripper has any contact with the primary
+                                  object (must-release gate). Uses a simple contact
+                                  check, not DefaultGraspPredicate, so it fires
+                                  correctly even when the object is inside a container.
             L4                  — full (:goal ...) satisfaction (mirrors l4_satisfied)
 
         Fine-grained path: uses the (:subtask_rewards ...) section when present,
@@ -297,8 +317,21 @@ class BDDLBaseDomain(SingleArmEnv):
                 else:
                     raw[raw_predicate_key_l2(name)] = False
 
+                # L2 implies L1: grasping means the object is near the EEF.
+                # Overrides LocalizedNearEEF's velocity gate, which can fire False
+                # during fast gripper motion while the object is actively held.
+                if raw[raw_predicate_key_l2(name)]:
+                    raw[raw_predicate_key_l1(name)] = True
+
                 # L3: instantaneous predicate — no one-shot latch, no :after gating.
+                # Must-release gate: L3 is False while the gripper has any contact
+                # with the primary object. Uses a simple any-contact check rather
+                # than DefaultGraspPredicate (L2), because when an object rests
+                # inside a container (e.g. basket), container walls also touch it,
+                # making L2 False even while the gripper still holds the object.
                 l3_val = bool(s["predicate_fn"](*args)) if args else False
+                if l3_val and primary is not None and self._gripper_touching_primary(primary):
+                    l3_val = False
                 raw[raw_predicate_key_l3(name)] = l3_val
         else:
             # Coarse fallback: treat each (:goal ...) conjunct as an anonymous subtask.
@@ -321,9 +354,17 @@ class BDDLBaseDomain(SingleArmEnv):
                 else:
                     raw[raw_predicate_key_l2(name)] = False
 
+                # L2 implies L1: grasping means the object is near the EEF.
+                if raw[raw_predicate_key_l2(name)]:
+                    raw[raw_predicate_key_l1(name)] = True
+
                 # L3: instantaneous predicate evaluation.
-                l3_val = self._eval_goal_predicate_state(pred)
-                raw[raw_predicate_key_l3(name)] = bool(l3_val)
+                # Must-release gate: any gripper–object contact inhibits L3
+                # (see fine-grained path comment for full rationale).
+                l3_val = bool(self._eval_goal_predicate_state(pred))
+                if l3_val and primary is not None and self._gripper_touching_primary(primary):
+                    l3_val = False
+                raw[raw_predicate_key_l3(name)] = l3_val
 
         # L4: full terminal goal satisfaction — mirrors l4_satisfied in step() info.
         raw[RAW_PREDICATE_KEY_L4] = bool(self._check_success())
