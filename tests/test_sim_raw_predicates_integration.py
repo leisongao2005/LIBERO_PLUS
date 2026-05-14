@@ -157,6 +157,16 @@ class TestInfoContractShape:
             f"l4_satisfied ({info['l4_satisfied']})"
         )
 
+        # L2 implies L1: grasping an object means it is near the EEF.
+        for k, v in raw.items():
+            if k.startswith("L2::") and v:
+                l1_key = "L1::" + k[4:]
+                assert raw.get(l1_key) is True, (
+                    f"{ctx}: L2 implies L1 violated — {k}=True but {l1_key}={raw.get(l1_key)}"
+                )
+        # Note: the must-release gate (L3 False while gripper contacts primary) is
+        # not assertable in zero-action steps — verified via Tier 3/4 manual testing.
+
     def test_contract_shape_task_a(self, env_task_a):
         infos = _collect_steps(env_task_a)
         for i, info in enumerate(infos):
