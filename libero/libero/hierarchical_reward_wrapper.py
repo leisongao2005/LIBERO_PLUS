@@ -1,5 +1,5 @@
 """
-Skeleton :class:`gym.Wrapper` for hierarchical L1–L4 shaping (Tracks C/D integrate here).
+:class:`gym.Wrapper` for hierarchical L1–L4 shaping (Phase 2: Tracks C/D wired).
 
 **MuJoCo-free import:** ``from libero.libero.hierarchical_reward_wrapper import …`` (or
 symbols re-exported from :mod:`libero.libero.bddlsim_interface`). The plan path
@@ -9,22 +9,52 @@ pulls in ``libero.libero.envs`` (heavy); prefer this module for tests without ro
 Spec: ``.cursor/plans/hierarchical_sim_wrapper_refactor_599aa945.plan.md``.
 Sim ``step`` ``info`` contract: :mod:`libero.libero.bddlsim_interface`.
 
-**Track B:** ``RewardConfig``, ``HierarchicalRewardWrapper`` lifecycle (``reset`` / ``step``),
-validation of sim ``info``, and passthrough of sparse reward and sim ``info`` keys. Shaped
-reward, ``predicate_deltas``, and ``privileged_status`` are Phase 2 (Tracks C/D).
+**Asymmetric actor–critic:** the wrapper appends a ``[Status: …]`` suffix to
+``obs[instruction_key]`` every step.  Actor models must mask from the stable
+``"[Status:"`` delimiter; that masking is external to this module.
 
-**Asymmetric actor–critic:** when status appending lands (Track D), models may mask from a
-stable delimiter (e.g. the literal ``"[Status:"`` prefix); masking is not implemented here.
+**l3_history key convention:** ``_l3_history`` uses **plain subtask names** (e.g.
+``"turnon_stove"``).  ``_status_string.resolve_slot_status`` requires this.
+``compute_shaped_reward`` requires ``L3::`` prefixed keys in ``one_shot_fired``; the
+wrapper translates via ``{f"L3::{k}": v …}``.
 """
 
 from __future__ import annotations
 
+import importlib.util as _ilu
+import sys as _sys
 from dataclasses import dataclass, field
+from pathlib import Path as _Path
 from typing import Dict, Literal, Mapping, MutableMapping, Optional, Sequence, Tuple, cast
 
 import gym
 
 from libero.libero.bddlsim_interface import validate_sim_step_info
+
+# ---------------------------------------------------------------------------
+# MuJoCo-free direct load of pure reward-function modules.
+# Importing via ``libero.libero.envs.wrappers._delta`` would trigger
+# ``envs/__init__.py`` (robosuite), breaking the MuJoCo-free import guarantee.
+# Loading by file path bypasses the parent package init while still caching in
+# sys.modules under the canonical qualified name.
+# ---------------------------------------------------------------------------
+
+def _load_pure_wrappers_module(name: str):
+    qual = f"libero.libero.envs.wrappers.{name}"
+    if qual in _sys.modules:
+        return _sys.modules[qual]
+    path = _Path(__file__).parent / "envs" / "wrappers" / f"{name}.py"
+    spec = _ilu.spec_from_file_location(qual, path)
+    mod = _ilu.module_from_spec(spec)
+    _sys.modules[qual] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_delta = _load_pure_wrappers_module("_delta")
+_status = _load_pure_wrappers_module("_status_string")
+
+# ---------------------------------------------------------------------------
 
 LevelName = Literal["L1", "L2", "L3", "L4"]
 
@@ -71,15 +101,24 @@ class HierarchicalRewardWrapper(gym.Wrapper):
     """
     Wraps a Markovian BDDL sim (or :class:`~libero.libero.bddlsim_interface.FakeBDDLEnv`).
 
+    Each ``step`` call:
+
+    1. Passes the action to the underlying sim and validates ``info``.
+    2. Detects transient L1/L2 deltas and one-shot L3/L4 fires.
+    3. Adds shaped reward (``Σ delta × weight``) on top of the sparse sim reward.
+    4. Appends ``[Status: …]`` to ``obs[instruction_key]``.
+    5. Exposes ``info["predicate_deltas"]``, ``info["privileged_status"]``,
+       ``info["shaped_reward"]`` for downstream consumers.
+
     Parameters
     ----------
     env
         Must emit ``info`` satisfying :func:`~libero.libero.bddlsim_interface.validate_sim_step_info`
         on every ``step``.
     reward_config
-        Shaping weights and overrides (consumed in Phase 2 when reward shaping is wired).
+        Shaping weights and overrides.
     instruction_key
-        Observation key whose string value will receive the privileged status suffix (Track D).
+        Observation key whose string value will receive the privileged status suffix.
     subtask_names_ordered
         If set, ``raw_predicates`` key set is validated against this sequence every step.
         If omitted, subtask order is inferred from the first post-``reset`` ``step``'s
@@ -101,11 +140,13 @@ class HierarchicalRewardWrapper(gym.Wrapper):
             tuple(subtask_names_ordered) if subtask_names_ordered is not None else None
         )
         self._resolved_subtask_names: Optional[Tuple[str, ...]] = self._explicit_subtask_names
-        # Per-episode state; Track C wires these into delta detection and reward shaping.
+        # Per-episode state
         self._l1_prev: Dict[str, bool] = {}
         self._l2_prev: Dict[str, bool] = {}
-        # L3 one-shot bitmask — wrapper-owned (sim is stateless; see DESIGN.md §1).
+        # L3 one-shot bitmask keyed by plain subtask name (see module docstring).
         self._l3_history: Dict[str, bool] = {}
+        # L4 one-shot bitmask (single key "L4").
+        self._l4_history: Dict[str, bool] = {}
 
     def reset(self, **kwargs):  # type: ignore[override]
         self._clear_episode_state()
@@ -113,7 +154,60 @@ class HierarchicalRewardWrapper(gym.Wrapper):
 
     def step(self, action):  # type: ignore[override]
         obs, reward, done, info = self.env.step(action)
+        obs = cast(MutableMapping[str, object], obs)
         info = self._passthrough_sim_info(info)
+
+        raw: Dict[str, bool] = info["raw_predicates"]
+        subtask_names = self._resolved_subtask_names
+        assert subtask_names is not None, "_resolved_subtask_names must be set before step"
+
+        # --- L1/L2 transient delta detection ---
+        l1_keys = [f"L1::{s}" for s in subtask_names]
+        l2_keys = [f"L2::{s}" for s in subtask_names]
+        l1_deltas = _delta.detect_transient_deltas(self._l1_prev, raw, l1_keys)
+        l2_deltas = _delta.detect_transient_deltas(self._l2_prev, raw, l2_keys)
+
+        # --- L3 one-shot latch (plain-name keys in _l3_history) ---
+        # Build a plain-name dict so apply_one_shot_latch stores plain keys,
+        # which format_status_string / resolve_slot_status expect.
+        l3_curr = {s: bool(raw.get(f"L3::{s}", False)) for s in subtask_names}
+        self._l3_history, l3_fired_plain = _delta.apply_one_shot_latch(
+            self._l3_history, l3_curr, list(subtask_names)
+        )
+        # Translate to L3::* keys for compute_shaped_reward.
+        l3_fired: Dict[str, bool] = {f"L3::{k}": v for k, v in l3_fired_plain.items()}
+
+        # --- L4 one-shot latch ---
+        self._l4_history, l4_fired = _delta.apply_one_shot_latch(
+            self._l4_history, {"L4": bool(raw.get("L4", False))}, ["L4"]
+        )
+
+        # --- Shaped reward ---
+        shaped = _delta.compute_shaped_reward(
+            {**l1_deltas, **l2_deltas},
+            {**l3_fired, **l4_fired},
+            self.reward_config.weights,
+            list(subtask_names),
+        )
+        reward = float(reward) + shaped
+
+        # --- Privileged status string ---
+        status = _status.format_status_string(list(subtask_names), self._l3_history, raw)
+        _status.append_status_to_obs(obs, self.instruction_key, status)
+
+        # --- Update prev state for next step ---
+        self._l1_prev = dict(raw)
+        self._l2_prev = dict(raw)
+
+        # --- Expose wrapper outputs in info ---
+        # Always include all keys (False when not fired) so downstream consumers
+        # can index without checking membership.
+        l3_all: Dict[str, bool] = {f"L3::{s}": l3_fired.get(f"L3::{s}", False) for s in subtask_names}
+        l4_all: Dict[str, bool] = {"L4": l4_fired.get("L4", False)}
+        info["predicate_deltas"] = {**l1_deltas, **l2_deltas, **l3_all, **l4_all}
+        info["privileged_status"] = status
+        info["shaped_reward"] = shaped
+
         return obs, reward, done, info
 
     def _clear_episode_state(self) -> None:
@@ -124,6 +218,7 @@ class HierarchicalRewardWrapper(gym.Wrapper):
         self._l1_prev.clear()
         self._l2_prev.clear()
         self._l3_history.clear()
+        self._l4_history.clear()
 
     def _passthrough_sim_info(self, info: Mapping[str, object]) -> Dict[str, object]:
         if not isinstance(info, MutableMapping):
@@ -139,7 +234,6 @@ class HierarchicalRewardWrapper(gym.Wrapper):
                     'info["raw_predicates"] must be present and mapping-like on every step '
                     "when subtask_names_ordered was not passed to the wrapper."
                 )
-            # Infer subtask names from L3::* keys in BDDL declaration order.
             l3_prefix = "L3::"
             self._resolved_subtask_names = tuple(
                 k[len(l3_prefix):] for k in raw if k.startswith(l3_prefix)
