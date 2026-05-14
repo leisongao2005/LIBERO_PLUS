@@ -9,17 +9,16 @@ def parse_subtask_rewards(group):
 
     Each element of the returned list is a dict:
       {
-        "name":          str,
+        "name":           str,
         "predicate_name": str,
-        "predicate_fn":  callable,    # pre-instantiated with any numeric params
-        "predicate_args": list[str],  # object-name tokens resolved at reward time
-        "reward":        float,       # fractional weight; all weights sum to 1.0
-        "after":         list[str],   # prerequisite subtask names (:after ordering)
-        "confirm_steps": int | None,  # optional per-subtask delay override
+        "predicate_fn":   callable,   # pre-instantiated with any numeric params
+        "predicate_args": list[str],  # object-name tokens resolved at evaluation time
       }
 
     Predicates with numeric thresholds (NearEEF, Near) are instantiated here so
     their __call__ only receives ObjectState arguments at evaluation time.
+    Note: :reward, :after, and :confirm_steps BDDL fields are no longer used;
+    reward shaping is owned by HierarchicalRewardWrapper via RewardConfig.
     """
     from libero.libero.envs.predicates import (
         VALIDATE_PREDICATE_FN_DICT,
@@ -36,9 +35,6 @@ def parse_subtask_rewards(group):
         pred_fn = None
         pred_name = None
         pred_args = []
-        reward = None
-        after = []
-        confirm_steps = None
 
         for attr in item[2:]:
             key = attr[0]
@@ -62,12 +58,6 @@ def parse_subtask_rewards(group):
                         f"Parametric predicates: {list(PARAMETRIC_PREDICATE_CLS.keys())}."
                     )
                 pred_args = obj_args
-            elif key == ":reward":
-                reward = float(attr[1])
-            elif key == ":after":
-                after = list(attr[1:])
-            elif key == ":confirm_steps":
-                confirm_steps = int(attr[1])
 
         assert pred_fn is not None, f"Subtask '{name}' has no :predicate attribute"
         subtasks.append(
@@ -76,20 +66,8 @@ def parse_subtask_rewards(group):
                 "predicate_name": pred_name,
                 "predicate_fn": pred_fn,
                 "predicate_args": pred_args,
-                "reward": reward,
-                "after": after,
-                "confirm_steps": confirm_steps,
             }
         )
-
-    # Fill equal-split default rewards for any subtask with reward=None.
-    n_unspecified = sum(1 for s in subtasks if s["reward"] is None)
-    allocated = sum(s["reward"] for s in subtasks if s["reward"] is not None)
-    if n_unspecified > 0:
-        default_reward = max(0.0, (1.0 - allocated) / n_unspecified)
-        for s in subtasks:
-            if s["reward"] is None:
-                s["reward"] = default_reward
 
     return subtasks
 
