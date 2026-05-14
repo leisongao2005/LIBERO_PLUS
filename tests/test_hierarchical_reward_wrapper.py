@@ -185,6 +185,55 @@ class TestShapedReward:
         _obs, _r, _done, info1 = wrapped.step(None)
         assert info1["shaped_reward"] == pytest.approx(WEIGHTS["L3"])
 
+    def test_l1_resets_across_episodes(self):
+        """L1 latch clears on reset — can re-fire in the next episode (GAP-2)."""
+        steps = [_make_info(l1_pick=True)]
+        wrapped = _make_wrapped(steps)
+        wrapped.reset()
+        _obs, _r, _done, info0 = wrapped.step(None)
+        assert info0["shaped_reward"] == pytest.approx(WEIGHTS["L1"])
+
+        wrapped.reset()
+        # FakeBDDLEnv resets its step counter, so steps[0] is served again.
+        _obs, _r, _done, info1 = wrapped.step(None)
+        assert info1["shaped_reward"] == pytest.approx(WEIGHTS["L1"])
+
+    def test_l2_resets_across_episodes(self):
+        """L2 latch clears on reset — can re-fire in the next episode (GAP-2)."""
+        steps = [_make_info(l2_pick=True)]
+        wrapped = _make_wrapped(steps)
+        wrapped.reset()
+        _obs, _r, _done, info0 = wrapped.step(None)
+        assert info0["shaped_reward"] == pytest.approx(WEIGHTS["L2"])
+
+        wrapped.reset()
+        _obs, _r, _done, info1 = wrapped.step(None)
+        assert info1["shaped_reward"] == pytest.approx(WEIGHTS["L2"])
+
+    def test_l4_resets_across_episodes(self):
+        """L4 latch clears on reset — can re-fire in the next episode (GAP-2)."""
+        steps = [_make_info(l4=True)]
+        wrapped = _make_wrapped(steps)
+        wrapped.reset()
+        _obs, _r, _done, info0 = wrapped.step(None)
+        assert info0["shaped_reward"] == pytest.approx(WEIGHTS["L4"])
+
+        wrapped.reset()
+        _obs, _r, _done, info1 = wrapped.step(None)
+        assert info1["shaped_reward"] == pytest.approx(WEIGHTS["L4"])
+
+    def test_l1_fires_on_first_step_if_initially_true(self):
+        """L1 fires on step 0 when the sim returns True from episode start (GAP-6).
+
+        apply_one_shot_latch with empty history fires immediately on the first
+        True observation — no prior False step required.
+        """
+        steps = [_make_info(l1_pick=True)]
+        wrapped = _make_wrapped(steps)
+        wrapped.reset()
+        _obs, _r, _done, info = wrapped.step(None)
+        assert info["shaped_reward"] == pytest.approx(WEIGHTS["L1"])
+
     def test_l4_fires_once(self):
         steps = [_make_info(l4=True), _make_info(l4=True)]
         wrapped = _make_wrapped(steps)
@@ -256,6 +305,27 @@ class TestStatusStringAppend:
         obs, _r, _done, info = wrapped.step(None)
         assert "pick=grasped" in info["privileged_status"]
 
+    def test_status_l2_reverts_to_pending_after_release(self):
+        """L2 earns reward once (one-shot) but status reflects instantaneous grasp (GAP-5).
+
+        After the gripper releases, status reverts to 'pending' even though the
+        L2 reward was already earned. By design: the critic sees the current
+        physical state, not the historical reward state.
+        """
+        steps = [
+            _make_info(l2_pick=True),   # step 0: grasped → reward fires
+            _make_info(l2_pick=False),  # step 1: released → status reverts
+        ]
+        wrapped = _make_wrapped(steps)
+        wrapped.reset()
+        _obs, _r, _done, info0 = wrapped.step(None)
+        assert "pick=grasped" in info0["privileged_status"]
+        assert info0["shaped_reward"] == pytest.approx(WEIGHTS["L2"])
+
+        _obs, _r, _done, info1 = wrapped.step(None)
+        assert "pick=pending" in info1["privileged_status"]
+        assert info1["shaped_reward"] == 0.0
+
     def test_status_resets_across_episodes(self):
         steps = [_make_info(l3_pick=True)]
         wrapped = _make_wrapped(steps)
@@ -315,3 +385,204 @@ class TestPredicateDeltas:
         _obs, _r, _done, info1 = wrapped.step(None)
         assert info0["predicate_deltas"]["L3::place"] is True
         assert info1["predicate_deltas"]["L3::place"] is False
+
+
+# ---------------------------------------------------------------------------
+# BUG-1: per_subtask_overrides in RewardConfig is never applied
+# ---------------------------------------------------------------------------
+
+class TestRewardConfig:
+    @pytest.mark.xfail(
+        reason=(
+            "per_subtask_overrides is validated at RewardConfig construction but "
+            "HierarchicalRewardWrapper.step() passes reward_config.weights (base weights) "
+            "to compute_shaped_reward — per_subtask_overrides are silently ignored."
+        ),
+        strict=True,
+    )
+    def test_per_subtask_override_applied(self):
+        """Per-subtask L3 weight override must be used instead of the base weight.
+
+        BUG: setting per_subtask_overrides={"pick": {"L3": 2.0}} should yield a
+        shaped reward of 2.0 when L3::pick fires, not the base WEIGHTS["L3"]=0.5.
+        """
+        override_l3 = 2.0  # intentionally != WEIGHTS["L3"] = 0.5
+        env = FakeBDDLEnv(
+            subtask_names_ordered=SUBTASKS,
+            base_instruction="do the task",
+            get_step_info=lambda _: _make_info(l3_pick=True),
+        )
+        wrapped = HierarchicalRewardWrapper(
+            env,
+            reward_config=RewardConfig(
+                weights=WEIGHTS,
+                per_subtask_overrides={"pick": {"L3": override_l3}},
+            ),
+            instruction_key="instruction",
+            subtask_names_ordered=SUBTASKS,
+        )
+        wrapped.reset()
+        _obs, _r, _done, info = wrapped.step(None)
+        assert info["shaped_reward"] == pytest.approx(override_l3)
+
+
+# ---------------------------------------------------------------------------
+# GAP-3: predicate_trajectory cleared on reset and accumulates correctly
+# ---------------------------------------------------------------------------
+
+class TestPredicateTrajectory:
+    def test_trajectory_empty_after_reset(self):
+        """Trajectory is cleared on reset — no stale data from prior episode."""
+        wrapped = _make_wrapped([_make_info(l1_pick=True), _make_info()])
+        wrapped.reset()
+        wrapped.step(None)
+        assert len(wrapped.predicate_trajectory) == 1
+
+        wrapped.reset()
+        assert wrapped.predicate_trajectory == []
+
+    def test_trajectory_accumulates_per_step(self):
+        """One entry is appended to the trajectory per step."""
+        n_steps = 3
+        wrapped = _make_wrapped([_make_info() for _ in range(n_steps)])
+        wrapped.reset()
+        for _ in range(n_steps):
+            wrapped.step(None)
+        assert len(wrapped.predicate_trajectory) == n_steps
+
+    def test_trajectory_step_indices_reset_on_new_episode(self):
+        """Step indices are 0-based from episode start, not cumulative across episodes."""
+        wrapped = _make_wrapped([_make_info(), _make_info()])
+        wrapped.reset()
+        wrapped.step(None)
+        wrapped.step(None)
+        assert wrapped.predicate_trajectory[0]["step"] == 0
+        assert wrapped.predicate_trajectory[1]["step"] == 1
+
+        wrapped.reset()
+        wrapped.step(None)
+        assert wrapped.predicate_trajectory[0]["step"] == 0
+
+
+# ---------------------------------------------------------------------------
+# GAP-4: Auto-inference of subtask_names_ordered when not explicitly provided
+# ---------------------------------------------------------------------------
+
+class TestAutoInference:
+    def _make_auto_wrapped(self, step_infos: List[BDDLSimStepInfo]) -> HierarchicalRewardWrapper:
+        """Like _make_wrapped but omits subtask_names_ordered so auto-inference runs."""
+        idx = [0]
+
+        def get_info(i: int) -> BDDLSimStepInfo:
+            return step_infos[i] if i < len(step_infos) else make_empty_sim_step_info(SUBTASKS)
+
+        env = FakeBDDLEnv(
+            subtask_names_ordered=SUBTASKS,
+            base_instruction="do the task",
+            get_step_info=get_info,
+        )
+        return HierarchicalRewardWrapper(
+            env,
+            reward_config=RewardConfig(weights=WEIGHTS),
+            instruction_key="instruction",
+            # subtask_names_ordered intentionally omitted
+        )
+
+    def test_auto_infer_subtask_names_from_first_step(self):
+        """Wrapper infers subtask names from L3::* keys in the first step's raw_predicates."""
+        wrapped = self._make_auto_wrapped([_make_info()])
+        wrapped.reset()
+        assert wrapped._resolved_subtask_names is None
+
+        wrapped.step(None)
+        assert wrapped._resolved_subtask_names == tuple(SUBTASKS)
+
+    def test_auto_infer_reward_correct(self):
+        """Shaped reward is computed correctly in auto-inference mode."""
+        wrapped = self._make_auto_wrapped([_make_info(l3_pick=True)])
+        wrapped.reset()
+        _obs, _r, _done, info = wrapped.step(None)
+        assert info["shaped_reward"] == pytest.approx(WEIGHTS["L3"])
+
+    def test_auto_infer_clears_on_reset(self):
+        """After reset, _resolved_subtask_names is cleared and re-inferred next episode."""
+        wrapped = self._make_auto_wrapped([_make_info()])
+        wrapped.reset()
+        wrapped.step(None)
+        assert wrapped._resolved_subtask_names == tuple(SUBTASKS)
+
+        wrapped.reset()
+        assert wrapped._resolved_subtask_names is None
+
+        wrapped.step(None)
+        assert wrapped._resolved_subtask_names == tuple(SUBTASKS)
+
+
+# ---------------------------------------------------------------------------
+# GAP-7: Empty subtask list produces stable output
+# ---------------------------------------------------------------------------
+
+class TestEdgeCases:
+    def test_zero_subtasks_stable_output(self):
+        """Wrapper with zero subtasks emits stable empty status and zero reward."""
+        env = FakeBDDLEnv(
+            subtask_names_ordered=[],
+            base_instruction="do the task",
+            get_step_info=lambda _: make_empty_sim_step_info([]),
+        )
+        wrapped = HierarchicalRewardWrapper(
+            env,
+            reward_config=RewardConfig(weights=WEIGHTS),
+            instruction_key="instruction",
+            subtask_names_ordered=[],
+        )
+        wrapped.reset()
+        obs, _r, _done, info = wrapped.step(None)
+        assert info["shaped_reward"] == 0.0
+        assert info["privileged_status"] == "[Status: ]"
+        assert info["predicate_deltas"] == {"L4": False}
+        assert "[Status: ]" in obs["instruction"]
+
+
+# ---------------------------------------------------------------------------
+# TC-W5: first_fire_steps and _step_count tracking
+# ---------------------------------------------------------------------------
+
+class TestFirstFireSteps:
+    def test_first_fire_steps_empty_after_reset(self):
+        """first_fire_steps is empty immediately after reset — no stale entries."""
+        wrapped = _make_wrapped([_make_info(l1_pick=True)])
+        wrapped.reset()
+        wrapped.step(None)
+        assert "L1::pick" in wrapped.first_fire_steps
+
+        # After a second reset, first_fire_steps must be cleared.
+        wrapped.reset()
+        assert wrapped.first_fire_steps == {}
+
+    def test_first_fire_steps_records_correct_step(self):
+        """first_fire_steps[key] equals the step index at which the latch first fired."""
+        # L1::pick fires at step 2 (0-indexed): steps 0 and 1 are all-False.
+        steps = [
+            _make_info(),           # step 0: nothing
+            _make_info(),           # step 1: nothing
+            _make_info(l1_pick=True),  # step 2: L1::pick fires
+        ]
+        wrapped = _make_wrapped(steps)
+        wrapped.reset()
+        wrapped.step(None)   # step 0
+        wrapped.step(None)   # step 1
+        wrapped.step(None)   # step 2 — L1::pick fires here
+
+        assert wrapped.first_fire_steps.get("L1::pick") == 2
+
+    def test_first_fire_steps_absent_for_never_fired_predicate(self):
+        """A predicate that never fires must not appear in first_fire_steps."""
+        # Only L3::pick fires; L3::place never does.
+        steps = [_make_info(l3_pick=True)]
+        wrapped = _make_wrapped(steps)
+        wrapped.reset()
+        wrapped.step(None)
+
+        assert "L3::pick" in wrapped.first_fire_steps
+        assert "L3::place" not in wrapped.first_fire_steps

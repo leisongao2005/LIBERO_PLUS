@@ -153,12 +153,21 @@ class HierarchicalRewardWrapper(gym.Wrapper):
         # Each entry is {"step": int, "raw": Dict[str, bool], "shaped_reward": float}.
         # Accessible via .predicate_trajectory; cleared on reset.
         self._predicate_trajectory: List[Dict] = []
+        # Step index at which each predicate key first fired its one-shot latch.
+        # Keys are the same predicate key strings used in predicate_deltas (e.g. "L1::pick",
+        # "L3::place", "L4"). Only populated for keys that have actually fired; cleared on reset.
+        self.first_fire_steps: Dict[str, int] = {}
+        # Episode-local step counter; incremented at the start of each step() call.
+        self._step_count: int = 0
 
     def reset(self, **kwargs):  # type: ignore[override]
         self._clear_episode_state()
         return self.env.reset(**kwargs)
 
     def step(self, action):  # type: ignore[override]
+        current_step = self._step_count
+        self._step_count += 1
+
         obs, reward, done, info = self.env.step(action)
         obs = cast(MutableMapping[str, object], obs)
         info = self._passthrough_sim_info(info)
@@ -187,6 +196,24 @@ class HierarchicalRewardWrapper(gym.Wrapper):
         self._l4_history, l4_fired = _delta.apply_one_shot_latch(
             self._l4_history, {"L4": bool(raw.get("L4", False))}, ["L4"]
         )
+
+        # --- Record first-fire step indices (instrumentation only, no reward effect) ---
+        # L1/L2 keys are stored with their full "L1::" / "L2::" prefix.
+        # L3 keys are translated from plain names to "L3::" prefixed keys for consistency.
+        # L4 is stored as "L4".
+        for key in l1_fired:
+            if key not in self.first_fire_steps:
+                self.first_fire_steps[key] = current_step
+        for key in l2_fired:
+            if key not in self.first_fire_steps:
+                self.first_fire_steps[key] = current_step
+        for plain_key in l3_fired_plain:
+            prefixed_key = f"L3::{plain_key}"
+            if prefixed_key not in self.first_fire_steps:
+                self.first_fire_steps[prefixed_key] = current_step
+        for key in l4_fired:
+            if key not in self.first_fire_steps:
+                self.first_fire_steps[key] = current_step
 
         # --- Shaped reward ---
         shaped = _delta.compute_shaped_reward(
@@ -278,7 +305,10 @@ class HierarchicalRewardWrapper(gym.Wrapper):
             **self._l4_history,
         }
         for k in sorted(combined):
-            print(f"  {k}: {'fired' if combined[k] else 'never'}")
+            if combined[k] and k in self.first_fire_steps:
+                print(f"  {k}: fired at step {self.first_fire_steps[k]}")
+            else:
+                print(f"  {k}: never")
 
     def _clear_episode_state(self) -> None:
         if self._explicit_subtask_names is None:
@@ -290,6 +320,8 @@ class HierarchicalRewardWrapper(gym.Wrapper):
         self._l3_history.clear()
         self._l4_history.clear()
         self._predicate_trajectory.clear()
+        self.first_fire_steps.clear()
+        self._step_count = 0
 
     def _passthrough_sim_info(self, info: Mapping[str, object]) -> Dict[str, object]:
         if not isinstance(info, MutableMapping):
